@@ -1,0 +1,77 @@
+"""AnswerAgent / CitationAgent 测试 - 伪 LLM 注入, 不依赖网络"""
+import pytest
+
+from backend.agents import answer_agent, citation_agent
+
+
+class FakeLLM:
+    async def astream(self, prompt, system_prompt=None):
+        for token in ["基于", "片段", "[1]", "的", "回答", "\n## 引用\n", "[1] transformer.pdf, 第3页"]:
+            yield token
+
+
+@pytest.fixture
+def chunks():
+    return [
+        {"text": "Transformer 使用自注意力机制计算上下文, 这是核心原理。", "doc_id": "doc1",
+         "page": 3, "doc_name": "transformer.pdf", "score": 0.81},
+        {"text": "反向传播算法通过梯度更新权重。", "doc_id": "doc2",
+         "page": 5, "doc_name": "bp.pdf", "score": 0.62},
+    ]
+
+
+def test_build_prompt_numbers_and_truncates_chunks(chunks):
+    prompt = answer_agent.build_prompt("Transformer 是什么", [], chunks)
+    assert "[1]" in prompt and "[2]" in prompt
+    assert "transformer.pdf 第3页" in prompt
+    assert "bp.pdf 第5页" in prompt
+    assert "问题: Transformer 是什么" in prompt
+
+
+def test_build_prompt_keeps_last_10_history_messages(chunks):
+    history = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"消息{i}"} for i in range(15)]
+    prompt = answer_agent.build_prompt("问题", history, chunks)
+    assert "消息14" in prompt
+    assert "消息0" not in prompt, "只保留最近 10 条历史"
+
+
+def test_build_prompt_truncates_long_chunk():
+    chunk = [{"text": "长" * 2000, "doc_id": "d", "page": 1, "doc_name": "text.pdf", "score": 0.5}]
+    prompt = answer_agent.build_prompt("问题", [], chunk)
+    assert len("长" * 2000) > answer_agent.MAX_CHUNK_CHARS
+    assert prompt.count("长") == answer_agent.MAX_CHUNK_CHARS
+
+
+def test_parse_citation_numbers_dedupe_and_order():
+    nums = citation_agent.parse_citation_numbers("结论[2][1], 补充[2] 与 [3] 引用")
+    assert nums == [2, 1, 3]
+
+
+def test_build_citations_maps_numbers_to_chunks(chunks):
+    citations = citation_agent.build_citations("答案[1]与[2]均来自片段", chunks)
+    assert len(citations) == 2
+    assert citations[0]["n"] == 1
+    assert citations[0]["doc_name"] == "transformer.pdf"
+    assert citations[0]["page"] == 3
+    assert citations[0]["verified"] is True
+    assert citations[1]["doc_name"] == "bp.pdf"
+
+
+def test_build_citations_skips_out_of_range(chunks):
+    citations = citation_agent.build_citations("答案[9]越界", chunks)
+    assert citations == []
+
+
+@pytest.mark.asyncio
+async def test_stream_event_sequence(chunks):
+    events = [e async for e in answer_agent.stream("Transformer 是什么", [], chunks, llm=FakeLLM())]
+    types = [e["type"] for e in events]
+    assert types[0] == "status"
+    assert types[-1] == "citations"
+    assert all(t == "chunk" for t in types[1:-1])
+    assert "".join(e["data"] for e in events if e["type"] == "chunk") == (
+        "基于片段[1]的回答\n## 引用\n[1] transformer.pdf, 第3页"
+    )
+    citations = events[-1]["data"]
+    assert citations[0]["doc_name"] == "transformer.pdf"
+    assert citations[0]["page"] == 3
