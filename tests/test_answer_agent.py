@@ -48,13 +48,15 @@ def test_parse_citation_numbers_dedupe_and_order():
 
 
 def test_build_citations_maps_numbers_to_chunks(chunks):
-    citations = citation_agent.build_citations("答案[1]与[2]均来自片段", chunks)
+    answer = "Transformer 使用自注意力机制计算上下文[1]。反向传播算法通过梯度更新权重[2]。"
+    citations = citation_agent.build_citations(answer, chunks)
     assert len(citations) == 2
     assert citations[0]["n"] == 1
     assert citations[0]["doc_name"] == "transformer.pdf"
     assert citations[0]["page"] == 3
     assert citations[0]["verified"] is True
     assert citations[1]["doc_name"] == "bp.pdf"
+    assert citations[1]["verified"] is True
 
 
 def test_build_citations_skips_out_of_range(chunks):
