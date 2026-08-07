@@ -26,11 +26,19 @@ export interface Conversation {
   updated_at: string
 }
 
+export interface Citation {
+  n: number
+  doc_name: string
+  page: number
+  snippet: string
+  verified: boolean
+}
+
 export interface Message {
   id: string
   conversation_id: string
   role: "user" | "assistant"
   content: string
-  citations: string | null
+  citations_json: Citation[] | null
   created_at: string
 }

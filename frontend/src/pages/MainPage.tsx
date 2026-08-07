@@ -123,7 +123,7 @@ function MainPage() {
             tab === "docs" ? (
               <DocList kbId={selectedKbId} />
             ) : (
-              <ChatArea />
+              <ChatArea kbId={selectedKbId} />
             )
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center gap-2 text-muted-foreground">
