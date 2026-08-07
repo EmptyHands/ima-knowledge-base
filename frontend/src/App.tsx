@@ -1,21 +1,35 @@
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom"
+import { Toaster } from "@/components/ui/sonner"
+import { isLoggedIn } from "@/lib/auth"
+import LoginPage from "@/pages/LoginPage"
+import MainPage from "@/pages/MainPage"
+import RegisterPage from "@/pages/RegisterPage"
+
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  if (!isLoggedIn()) {
+    return <Navigate to="/login" replace />
+  }
+  return <>{children}</>
+}
 
 function App() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-muted/30 p-8">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle>ima 知识库</CardTitle>
-          <CardDescription>智能知识库问答系统 (Web 版 ima)</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <Button>shadcn Button 验证</Button>
-          <Button variant="outline">Outline 按钮</Button>
-          <Button variant="ghost">Ghost 按钮</Button>
-        </CardContent>
-      </Card>
-    </div>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+        <Route
+          path="/"
+          element={
+            <RequireAuth>
+              <MainPage />
+            </RequireAuth>
+          }
+        />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+      <Toaster />
+    </BrowserRouter>
   )
 }
 
