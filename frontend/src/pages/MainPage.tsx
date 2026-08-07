@@ -10,7 +10,7 @@ import UploadDialog from "@/components/UploadDialog"
 import { Button } from "@/components/ui/button"
 import { ApiError, api } from "@/lib/api"
 import { clearToken } from "@/lib/auth"
-import type { KnowledgeBase } from "@/lib/types"
+import type { Conversation, KnowledgeBase } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 type Tab = "docs" | "chat"
@@ -20,6 +20,8 @@ function MainPage() {
   const [username, setUsername] = useState("")
   const [kbs, setKbs] = useState<KnowledgeBase[]>([])
   const [selectedKbId, setSelectedKbId] = useState<string | null>(null)
+  const [conversations, setConversations] = useState<Conversation[]>([])
+  const [convId, setConvId] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>("chat")
   const [kbDialogOpen, setKbDialogOpen] = useState(false)
   const [editingKb, setEditingKb] = useState<KnowledgeBase | null>(null)
@@ -50,6 +52,51 @@ function MainPage() {
     setSelectedKbId(id)
     setTab("chat")
   }, [])
+
+  const fetchConversations = useCallback(async () => {
+    if (!selectedKbId) {
+      setConversations([])
+      setConvId(null)
+      return
+    }
+    try {
+      const list = await api.get<Conversation[]>(`/api/v1/conversations?kb_id=${selectedKbId}`)
+      setConversations(list)
+      setConvId((cur) => {
+        if (cur && list.some((c) => c.id === cur)) return cur
+        return list.length > 0 ? list[0].id : null
+      })
+    } catch {
+      /* 401 由 api.ts 处理 */
+    }
+  }, [selectedKbId])
+
+  useEffect(() => {
+    fetchConversations()
+  }, [fetchConversations])
+
+  async function handleNewConv() {
+    if (!selectedKbId) return
+    try {
+      const conv = await api.post<Conversation>("/api/v1/conversations", { kb_id: selectedKbId })
+      setConversations((prev) => [conv, ...prev])
+      setConvId(conv.id)
+      setTab("chat")
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "新建会话失败")
+    }
+  }
+
+  async function handleDeleteConv(conv: Conversation) {
+    if (!window.confirm(`确定删除会话「${conv.title}」？`)) return
+    try {
+      await api.del(`/api/v1/conversations/${conv.id}`)
+      toast.success("会话已删除")
+      fetchConversations()
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "删除失败")
+    }
+  }
 
   function handleCreateKb() {
     setEditingKb(null)
@@ -82,11 +129,16 @@ function MainPage() {
       <Sidebar
         kbs={kbs}
         selectedKbId={selectedKbId}
+        conversations={conversations}
+        selectedConvId={convId}
         username={username}
         onSelectKb={handleSelectKb}
         onCreateKb={handleCreateKb}
         onRenameKb={handleRenameKb}
         onDeleteKb={handleDeleteKb}
+        onSelectConv={setConvId}
+        onCreateConv={handleNewConv}
+        onDeleteConv={handleDeleteConv}
         onLogout={handleLogout}
       />
 
@@ -123,7 +175,12 @@ function MainPage() {
             tab === "docs" ? (
               <DocList kbId={selectedKbId} />
             ) : (
-              <ChatArea kbId={selectedKbId} />
+              <ChatArea
+                kbId={selectedKbId}
+                convId={convId}
+                onNewConv={handleNewConv}
+                onConversationUpdated={fetchConversations}
+              />
             )
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center gap-2 text-muted-foreground">

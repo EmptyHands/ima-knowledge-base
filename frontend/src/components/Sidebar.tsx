@@ -1,4 +1,5 @@
 import { BookOpen, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react"
+import ConversationList from "@/components/ConversationList"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -8,28 +9,38 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import type { KnowledgeBase } from "@/lib/types"
+import type { Conversation, KnowledgeBase } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 interface SidebarProps {
   kbs: KnowledgeBase[]
   selectedKbId: string | null
+  conversations: Conversation[]
+  selectedConvId: string | null
   username: string
   onSelectKb: (id: string) => void
   onCreateKb: () => void
   onRenameKb: (kb: KnowledgeBase) => void
   onDeleteKb: (kb: KnowledgeBase) => void
+  onSelectConv: (id: string) => void
+  onCreateConv: () => void
+  onDeleteConv: (conv: Conversation) => void
   onLogout: () => void
 }
 
 function Sidebar({
   kbs,
   selectedKbId,
+  conversations,
+  selectedConvId,
   username,
   onSelectKb,
   onCreateKb,
   onRenameKb,
   onDeleteKb,
+  onSelectConv,
+  onCreateConv,
+  onDeleteConv,
   onLogout,
 }: SidebarProps) {
   return (
@@ -106,6 +117,15 @@ function Sidebar({
             ))}
           </div>
         )}
+        <div className="mt-2 border-t pt-1">
+          <ConversationList
+            conversations={conversations}
+            selectedConvId={selectedConvId}
+            onSelect={onSelectConv}
+            onCreate={onCreateConv}
+            onDelete={onDeleteConv}
+          />
+        </div>
       </ScrollArea>
 
       <div className="border-t p-3">
