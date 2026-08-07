@@ -8,9 +8,55 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import backend.agents.retriever_agent as retriever_agent_module
 import backend.core.config as config_module
 import backend.core.database as database_module
+import backend.core.llm_adapter as llm_adapter_module
 from backend.models.database import Base
+
+
+class FakeLLM:
+    """测试用伪 LLM: 输出固定 token(含 [1] 引用标注), fail=True 模拟生成故障"""
+
+    def __init__(self, tokens=None, fail=False):
+        self._tokens = tokens or ["基于", "片段", "[1]", "的回答", "\n## 引用\n", "[1] 测试文档.pdf, 第1页"]
+        self._fail = fail
+
+    async def astream(self, prompt, system_prompt=None):
+        if self._fail:
+            raise RuntimeError("LLM 模拟故障")
+        for token in self._tokens:
+            yield token
+
+    async def ainvoke(self, prompt, system_prompt=None, **kwargs):
+        if self._fail:
+            raise RuntimeError("LLM 模拟故障")
+        return "".join(self._tokens)
+
+
+@pytest.fixture()
+def fake_llm(monkeypatch):
+    """注入伪 LLM 到 llm_adapter 单例槽位"""
+    fake = FakeLLM()
+    monkeypatch.setattr(llm_adapter_module, "_llm_adapter", fake)
+    return fake
+
+
+@pytest.fixture()
+def fake_retrieve(monkeypatch):
+    """替换 retriever_agent.retrieve, 不依赖真实向量库"""
+
+    async def _fake(question, kb_id, top_k=5):
+        return {
+            "chunks": [
+                {"text": "Transformer 使用自注意力机制计算上下文", "doc_id": "doc1",
+                 "page": 3, "doc_name": "transformer.pdf", "score": 0.81},
+            ],
+            "web_results": [],
+        }
+
+    monkeypatch.setattr(retriever_agent_module, "retrieve", _fake)
+    return _fake
 
 
 @pytest.fixture()

@@ -24,18 +24,20 @@ def test_create_and_list_conversations(app_client, auth_headers, kb_id):
     assert resp.json()[0]["id"] == conv_id
 
 
-def test_ask_returns_sse_stream(app_client, auth_headers, kb_id):
+def test_ask_returns_sse_stream(app_client, auth_headers, kb_id, fake_llm, fake_retrieve):
     resp = app_client.post(f"/api/v1/conversations?kb_id={kb_id}",
                            json={"kb_id": kb_id, "title": "对话"},
                            headers=auth_headers)
     conv_id = resp.json()["id"]
 
     resp = app_client.post(f"/api/v1/conversations/{conv_id}/messages",
+                           json={"question": "Transformer 是什么"},
                            headers=auth_headers)
     assert resp.status_code == 200
     assert "text/event-stream" in resp.headers["content-type"]
     body = resp.text
     assert "event: status" in body
+    assert "event: chunk" in body
     assert "event: done" in body
 
 
@@ -49,7 +51,8 @@ def test_ask_on_others_conversation_404(app_client, auth_headers, kb_id):
     resp = app_client.post("/api/v1/auth/login",
                            json={"username": "bob", "password": "secret123"})
     bob_headers = {"Authorization": f"Bearer {resp.json()['access_token']}"}
-    resp = app_client.post(f"/api/v1/conversations/{conv_id}/messages", headers=bob_headers)
+    resp = app_client.post(f"/api/v1/conversations/{conv_id}/messages",
+                           json={"question": "偷偷提问"}, headers=bob_headers)
     assert resp.status_code == 404
 
 

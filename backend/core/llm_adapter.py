@@ -1,6 +1,7 @@
 """LLM 适配器 - 支持 OpenAI 兼容接口"""
 import logging
 import asyncio
+from abc import ABC, abstractmethod
 from typing import Optional, AsyncGenerator
 from openai import AsyncOpenAI
 from .config import get_config
@@ -8,8 +9,20 @@ from .config import get_config
 logger = logging.getLogger(__name__)
 
 
-class LLMAdapter:
-    """LLM 抽象层"""
+class LLMProvider(ABC):
+    """LLM 抽象接口 - 生产实现为 LLMAdapter, 测试注入 FakeLLM"""
+
+    @abstractmethod
+    async def ainvoke(self, prompt: str, system_prompt: str = None, **kwargs) -> str:
+        ...
+
+    @abstractmethod
+    async def astream(self, prompt: str, system_prompt: str = None, **kwargs) -> AsyncGenerator[str, None]:
+        ...
+
+
+class LLMAdapter(LLMProvider):
+    """OpenAI 兼容接口的 LLM 适配器"""
 
     def __init__(self, model_name_override: str = None, base_url_override: str = None,
                  api_key_override: str = None, temperature_override: float = None,
@@ -98,7 +111,7 @@ class LLMAdapter:
 _llm_adapter: Optional[LLMAdapter] = None
 
 
-def get_llm() -> LLMAdapter:
+def get_llm() -> LLMProvider:
     global _llm_adapter
     if _llm_adapter is None:
         _llm_adapter = LLMAdapter()
