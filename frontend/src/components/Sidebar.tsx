@@ -1,8 +1,15 @@
-import { BookOpen, Plus } from "lucide-react"
+import { BookOpen, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { cn } from "@/lib/utils"
 import type { KnowledgeBase } from "@/lib/types"
+import { cn } from "@/lib/utils"
 
 interface SidebarProps {
   kbs: KnowledgeBase[]
@@ -10,6 +17,8 @@ interface SidebarProps {
   username: string
   onSelectKb: (id: string) => void
   onCreateKb: () => void
+  onRenameKb: (kb: KnowledgeBase) => void
+  onDeleteKb: (kb: KnowledgeBase) => void
   onLogout: () => void
 }
 
@@ -19,6 +28,8 @@ function Sidebar({
   username,
   onSelectKb,
   onCreateKb,
+  onRenameKb,
+  onDeleteKb,
   onLogout,
 }: SidebarProps) {
   return (
@@ -50,19 +61,48 @@ function Sidebar({
         ) : (
           <div className="flex flex-col gap-0.5 p-2">
             {kbs.map((kb) => (
-              <button
+              <div
                 key={kb.id}
-                onClick={() => onSelectKb(kb.id)}
                 className={cn(
-                  "flex items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors",
+                  "group flex items-center rounded-md transition-colors",
                   kb.id === selectedKbId
                     ? "bg-accent text-accent-foreground font-medium"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground",
                 )}
               >
-                <BookOpen className="size-4 shrink-0" />
-                <span className="truncate">{kb.name}</span>
-              </button>
+                <button
+                  onClick={() => onSelectKb(kb.id)}
+                  className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-sm"
+                >
+                  <BookOpen className="size-4 shrink-0" />
+                  <span className="truncate">{kb.name}</span>
+                </button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="mr-1 size-6 opacity-0 transition-opacity group-hover:opacity-100"
+                    >
+                      <MoreHorizontal className="size-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => onRenameKb(kb)}>
+                      <Pencil className="size-4" />
+                      重命名
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onClick={() => onDeleteKb(kb)}
+                    >
+                      <Trash2 className="size-4" />
+                      删除
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             ))}
           </div>
         )}
