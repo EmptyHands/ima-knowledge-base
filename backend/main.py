@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.core.database import init_database  # noqa: E402
+from backend.api.routes import auth, chat, documents, knowledge_bases  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,6 +41,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth.router)
+app.include_router(knowledge_bases.router)
+app.include_router(documents.router)
+app.include_router(chat.router)
 
 
 @app.get("/health")

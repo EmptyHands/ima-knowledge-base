@@ -21,3 +21,6 @@ frontend/.env.local
 # 系统
 .DS_Store
 Thumbs.db
+
+# Windows bash crash dumps
+*.stackdump
