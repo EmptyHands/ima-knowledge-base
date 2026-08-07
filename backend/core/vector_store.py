@@ -15,6 +15,7 @@ EMBEDDING_DIMS = {
     "all-mpnet-base-v2": 768,
     "bge-small-zh-v1.5": 512,
     "bge-large-zh-v1.5": 1024,
+    "bge-m3": 1024,
     "text-embedding-3-small": 1536,
     "text-embedding-3-large": 3072,
     "text-embedding-ada-002": 1536,

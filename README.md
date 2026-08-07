@@ -27,7 +27,7 @@ flowchart LR
         DOC[文档路由]
         DOC --> PARSE[文件解析 pdfplumber/python-docx]
         PARSE --> CHUNK[分块器 800字符/100重叠]
-        CHUNK --> EMBED[Embedding nomic-embed-text]
+        CHUNK --> EMBED[Embedding bge-m3]
         EMBED --> QDRANT[(Qdrant 向量库)]
         ASK[问答路由 SSE]
         ASK --> RET[RetrieverAgent]
@@ -59,11 +59,11 @@ flowchart LR
 | 手写 RAG 多 Agent 管线 | LangChain / LlamaIndex | 检索→回答→引用校验三段逻辑清晰可讲,依赖少易调试;面试答辩可展示系统设计能力 |
 | Qdrant 向量库 | Chroma / Milvus | Docker 一条命令启动,Python 客户端简单;支持 filter 按 kb_id 隔离 |
 | FastAPI + SQLAlchemy | Django / Flask | 原生 SSE/异步流式支持,自动 OpenAPI 文档,SQLite 起步可平滑切 PostgreSQL |
-| DeepSeek(OpenAI 兼容) + Ollama nomic-embed-text | 全云 / 全本地 | LLM 便宜可用,embedding 本地免费跑,两者分离可独立替换 |
+| DeepSeek(OpenAI 兼容) + Ollama bge-m3 | 全云 / 全本地 | LLM 便宜可用,embedding 本地免费跑;bge-m3 中文检索质量优于 nomic-embed-text |
 
 ## 快速开始
 
-前置依赖: [Docker](https://www.docker.com/)、[Ollama](https://ollama.com/) (含 `nomic-embed-text`)、Python 3.10+、Node.js 18+
+前置依赖: [Docker](https://www.docker.com/)、[Ollama](https://ollama.com/) (含 `bge-m3`)、Python 3.10+、Node.js 18+
 
 ```bash
 # 1. 配置 (填 LLM_API_KEY; DeepSeek 或任意 OpenAI 兼容服务)
