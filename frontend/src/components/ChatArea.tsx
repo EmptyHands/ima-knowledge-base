@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { MessageSquare, Send, Square } from "lucide-react"
 import { toast } from "sonner"
+import AnswerMarkdown from "@/components/AnswerMarkdown"
+import CitationCard from "@/components/CitationCard"
 import { Button } from "@/components/ui/button"
 import { ApiError, api } from "@/lib/api"
 import { streamChat, type SSEHandlers } from "@/lib/stream"
 import type { Citation, Message } from "@/lib/types"
+import { cn } from "@/lib/utils"
 
 interface ChatAreaProps {
   kbId: string
@@ -20,6 +23,7 @@ function ChatArea({ kbId, convId, onNewConv, onConversationUpdated }: ChatAreaPr
   const [statusText, setStatusText] = useState("")
   const [streamAnswer, setStreamAnswer] = useState("")
   const [streamCitations, setStreamCitations] = useState<Citation[]>([])
+  const [activeCitation, setActiveCitation] = useState<Citation | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const answerRef = useRef("")
   const citationsRef = useRef<Citation[]>([])
@@ -126,18 +130,30 @@ function ChatArea({ kbId, convId, onNewConv, onConversationUpdated }: ChatAreaPr
     abortRef.current?.abort()
   }
 
+  function openCitation(cits: Citation[] | null | undefined, n: number) {
+    const c = cits?.find((x) => x.n === n)
+    if (c) setActiveCitation(c)
+  }
+
   function renderCitations(cits: Citation[] | null | undefined) {
     if (!cits || cits.length === 0) return null
     return (
       <div className="mt-2 flex flex-wrap gap-1 border-t pt-2">
         {cits.map((c) => (
-          <span
+          <button
             key={c.n}
-            className="rounded-md bg-background px-2 py-0.5 text-xs text-muted-foreground"
+            onClick={() => setActiveCitation(c)}
             title={c.snippet}
+            className={cn(
+              "rounded-md px-2 py-0.5 text-xs transition-colors",
+              c.verified
+                ? "bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                : "cursor-not-allowed border border-dashed border-destructive/50 text-muted-foreground/50",
+            )}
           >
             [{c.n}] {c.doc_name} · 第{c.page}页
-          </span>
+            {!c.verified && <span className="ml-1">(无直接引用来源)</span>}
+          </button>
         ))}
       </div>
     )
@@ -171,7 +187,11 @@ function ChatArea({ kbId, convId, onNewConv, onConversationUpdated }: ChatAreaPr
               ) : (
                 <div key={m.id} className="flex justify-start">
                   <div className="max-w-[85%] rounded-2xl bg-muted px-4 py-2 text-sm">
-                    <p className="whitespace-pre-wrap">{m.content}</p>
+                    <AnswerMarkdown
+                      content={m.content}
+                      citations={m.citations_json}
+                      onCitationClick={(n) => openCitation(m.citations_json, n)}
+                    />
                     {renderCitations(m.citations_json)}
                   </div>
                 </div>
@@ -180,11 +200,15 @@ function ChatArea({ kbId, convId, onNewConv, onConversationUpdated }: ChatAreaPr
             {streaming && (
               <div className="flex justify-start">
                 <div className="max-w-[85%] rounded-2xl bg-muted px-4 py-2 text-sm">
-                  <p className="whitespace-pre-wrap">
-                    {streamAnswer || (
-                      <span className="text-muted-foreground">{statusText || "思考中…"}</span>
-                    )}
-                  </p>
+                  {streamAnswer ? (
+                    <AnswerMarkdown
+                      content={streamAnswer}
+                      citations={streamCitations}
+                      onCitationClick={(n) => openCitation(streamCitations, n)}
+                    />
+                  ) : (
+                    <p className="text-muted-foreground">{statusText || "思考中…"}</p>
+                  )}
                   {renderCitations(streamCitations)}
                 </div>
               </div>
@@ -221,6 +245,8 @@ function ChatArea({ kbId, convId, onNewConv, onConversationUpdated }: ChatAreaPr
           )}
         </div>
       </div>
+
+      <CitationCard citation={activeCitation} onClose={() => setActiveCitation(null)} />
     </div>
   )
 }
