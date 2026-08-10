@@ -1,11 +1,41 @@
-"""Qdrant vector store - 支持 local / ollama / openai embedding 后端"""
+"""Qdrant vector store - 支持 local / ollama / openai embedding 后端 + BM25 稀疏兜底"""
 import logging
 import hashlib
 import asyncio
+import re
+from collections import Counter
 from typing import Optional
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+from qdrant_client.models import (
+    Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue,
+    SparseVectorParams, SparseVector,
+)
 from .config import get_config, EmbeddingProvider
+
+STOP_WORDS = {"的", "了", "在", "是", "和", "与", "及", "或", "就", "都", "而", "也", "之", "等", "吗", "呢"}
+
+
+def tokenize(text: str) -> list[str]:
+    """中文 jieba 分词 + 英文按空白分词, 过滤停用词与纯符号噪音"""
+    import jieba
+    words = jieba.lcut(text.lower())
+    return [w.strip() for w in words
+            if w.strip() and w.strip() not in STOP_WORDS and not re.fullmatch(r"[\W_]+", w)]
+
+
+def _term_index(token: str) -> int:
+    """稳定哈希: 同一 token 永远映射到同一 index, 避免词表漂移"""
+    return int(hashlib.md5(token.encode("utf-8")).hexdigest()[:8], 16) % (1 << 24)
+
+
+def build_sparse_vector(tokens: list[str]) -> dict:
+    """TF 词频稀疏向量: {"indices": [...], "values": [...]}"""
+    if not tokens:
+        return {"indices": [], "values": []}
+    counts = Counter(tokens)
+    pairs = sorted(((_term_index(t), float(c)) for t, c in counts.items()),
+                   key=lambda x: x[0])
+    return {"indices": [i for i, _ in pairs], "values": [v for _, v in pairs]}
 
 logger = logging.getLogger(__name__)
 
@@ -65,14 +95,25 @@ class VectorStore:
         dim = getattr(self, '_embed_dim', 768)
         try:
             existing = self.client.get_collection(self.collection_name)
-            existing_dim = existing.config.params.vectors.size
+            params = existing.config.params
+            vectors = params.vectors
+            existing_dim = vectors["dense"].size if isinstance(vectors, dict) else vectors.size
+            has_sparse = bool(params.sparse_vectors)
+            if not has_sparse:
+                raise ValueError(
+                    f"现有 collection 缺少关键词(sparse)索引, 无法启用兜底检索。\n"
+                    f"请执行以下步骤完成迁移:\n"
+                    f"  1. 手动删除旧 collection: client.delete_collection('{self.collection_name}')\n"
+                    f"  2. 重启应用, 将自动创建双向量 collection\n"
+                    f"  3. 重新导入所有文档以重建向量索引"
+                )
             if existing_dim != dim:
                 raise ValueError(
                     f"嵌入向量维度不匹配: 已有 collection 为 {existing_dim}d, "
                     f"当前模型 {self.embedding_model_name} 为 {dim}d。\n"
                     f"请执行以下步骤完成迁移:\n"
                     f"  1. 手动删除旧 collection: client.delete_collection('{self.collection_name}')\n"
-                    f"  2. 重启应用,将自动创建新 collection\n"
+                    f"  2. 重启应用, 将自动创建新 collection\n"
                     f"  3. 重新导入所有文档以重建向量索引"
                 )
         except ValueError:
@@ -80,9 +121,14 @@ class VectorStore:
         except Exception:
             self.client.create_collection(
                 collection_name=self.collection_name,
-                vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
+                vectors_config={
+                    "dense": VectorParams(size=dim, distance=Distance.COSINE),
+                },
+                sparse_vectors_config={
+                    "sparse": SparseVectorParams(),
+                },
             )
-            logger.info(f"Created collection {self.collection_name} (dim={dim})")
+            logger.info(f"Created dual-vector collection {self.collection_name} (dim={dim})")
 
     async def _embed(self, text: str) -> list[float]:
         if self.embedding_provider == EmbeddingProvider.LOCAL:
@@ -118,6 +164,7 @@ class VectorStore:
             if not text:
                 continue
             embedding = await self._embed(text)
+            sparse_vec = build_sparse_vector(tokenize(text))
             payload = {
                 "kb_id": kb_id,
                 "doc_id": doc_id,
@@ -128,7 +175,8 @@ class VectorStore:
                 **(metadata or {}),
             }
             point_id = self._point_id(f"{doc_id}_{c.get('chunk_index', 0)}_{text[:50]}")
-            points.append(PointStruct(id=point_id, vector=embedding, payload=payload))
+            points.append(PointStruct(id=point_id, vector={"dense": embedding, "sparse": sparse_vec},
+                                      payload=payload))
         if points:
             self.client.upsert(collection_name=self.collection_name, points=points)
             logger.info(f"Added {len(points)} vectors (kb={kb_id}, doc={doc_id})")
@@ -139,6 +187,31 @@ class VectorStore:
         response = self.client.query_points(
             collection_name=self.collection_name,
             query=query_embedding,
+            using="dense",
+            query_filter=Filter(must=[FieldCondition(key="kb_id", match=MatchValue(value=kb_id))]),
+            limit=top_k, with_payload=True,
+        )
+        return [
+            {
+                "score": r.score,
+                "text": r.payload.get("text", ""),
+                "doc_id": r.payload.get("doc_id", ""),
+                "page": r.payload.get("page", 0),
+                "chunk_index": r.payload.get("chunk_index", 0),
+            }
+            for r in response.points
+        ]
+
+    async def sparse_search(self, kb_id: str, query: str, top_k: int = 5) -> list[dict]:
+        """关键词(BM25)检索, 返回结构与 search 一致"""
+        query_tokens = tokenize(query)
+        if not query_tokens:
+            return []
+        sparse_vec = build_sparse_vector(query_tokens)
+        response = self.client.query_points(
+            collection_name=self.collection_name,
+            query=SparseVector(indices=sparse_vec["indices"], values=sparse_vec["values"]),
+            using="sparse",
             query_filter=Filter(must=[FieldCondition(key="kb_id", match=MatchValue(value=kb_id))]),
             limit=top_k, with_payload=True,
         )

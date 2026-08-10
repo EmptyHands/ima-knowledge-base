@@ -1,7 +1,7 @@
 """VectorStore 测试 - 使用确定性伪向量,不依赖 Ollama/网络"""
 import hashlib
 import pytest
-from qdrant_client.models import Distance, VectorParams
+from qdrant_client.models import Distance, VectorParams, SparseVectorParams
 
 from backend.core.vector_store import VectorStore
 
@@ -10,6 +10,8 @@ TEST_COLLECTION = "ima_kb_test"
 
 @pytest.fixture
 def store(monkeypatch):
+    # 测试自建临时 collection, 绕过 _ensure_collection 对存量结构的检查
+    monkeypatch.setattr(VectorStore, "_ensure_collection", lambda self: None)
     vs = VectorStore()
     vs.collection_name = TEST_COLLECTION
     try:
@@ -18,7 +20,8 @@ def store(monkeypatch):
         pass
     vs.client.create_collection(
         collection_name=TEST_COLLECTION,
-        vectors_config=VectorParams(size=vs._embed_dim, distance=Distance.COSINE),
+        vectors_config={"dense": VectorParams(size=vs._embed_dim, distance=Distance.COSINE)},
+        sparse_vectors_config={"sparse": SparseVectorParams()},
     )
 
     async def fake_embed(text: str) -> list[float]:
