@@ -1,7 +1,8 @@
-"""检索核心 - 向量检索封装(附文档名映射) + 意图识别 + 网络搜索"""
+"""检索核心 - 三级降级检索(附文档名映射) + 意图识别 + 网络搜索"""
 import logging
 import os
 
+from backend.core.config import get_config
 from backend.core.database import get_db_session
 from backend.core.vector_store import get_vector_store
 from backend.models.database import Document
@@ -17,14 +18,27 @@ def detect_web_intent(question: str) -> bool:
     return any(kw in q for kw in WEB_INTENT_KEYWORDS)
 
 
-async def vector_search(kb_id: str, question: str, top_k: int = 5) -> list[dict]:
-    """向量检索 top-k 个 chunk, 补充 doc_name 文档名
+async def vector_search(kb_id: str, question: str, top_k: int | None = None) -> list[dict]:
+    """三级降级检索: dense → (空/低分) → sparse → 空
 
-    返回 [{score, text, doc_id, page, chunk_index, doc_name}]
+    返回 [{score, text, doc_id, page, chunk_index, doc_name, search_type}]
     """
-    chunks = await get_vector_store().search(kb_id, question, top_k=top_k)
-    if not chunks:
-        return []
+    config = get_config()
+    top_k = top_k or config.retrieval_top_k
+    store = get_vector_store()
+
+    dense = await store.search(kb_id, question, top_k=top_k)
+    if dense and dense[0]["score"] >= config.retrieval_dense_threshold:
+        return _attach_doc_names(dense, "dense")
+
+    sparse = await store.sparse_search(kb_id, question, top_k=top_k)
+    if sparse:
+        return _attach_doc_names(sparse, "sparse")
+    return []
+
+
+def _attach_doc_names(chunks: list[dict], search_type: str) -> list[dict]:
+    """补充 doc_name 文档名与 search_type 标记"""
     doc_ids = {c["doc_id"] for c in chunks}
     db = get_db_session()
     try:
@@ -32,7 +46,7 @@ async def vector_search(kb_id: str, question: str, top_k: int = 5) -> list[dict]
         name_map = {row.id: row.filename for row in rows}
     finally:
         db.close()
-    return [{**c, "doc_name": name_map.get(c["doc_id"], "")} for c in chunks]
+    return [{**c, "doc_name": name_map.get(c["doc_id"], ""), "search_type": search_type} for c in chunks]
 
 
 async def web_search(query: str, max_results: int = 5) -> list[dict]:

@@ -57,6 +57,60 @@ async def test_retrieve_attaches_doc_name(app_client, monkeypatch, sample_chunks
     assert result["web_results"] == []
 
 
+class FakeHybridStore:
+    """可控 dense/sparse 结果, 模拟降级触发"""
+
+    def __init__(self, dense=None, sparse=None):
+        self._dense = dense
+        self._sparse = sparse
+
+    async def search(self, kb_id, query, top_k=5):
+        return (self._dense or [])[:top_k]
+
+    async def sparse_search(self, kb_id, query, top_k=5):
+        return (self._sparse or [])[:top_k]
+
+
+DENSE_HIT = [{"score": 0.81, "text": "Transformer 使用自注意力", "doc_id": "doc1", "page": 3, "chunk_index": 0}]
+DENSE_LOW = [{"score": 0.12, "text": "低分片段", "doc_id": "doc1", "page": 1, "chunk_index": 0}]
+SPARSE_HIT = [{"score": 2.5, "text": "关键词命中片段 alpha beta", "doc_id": "doc2", "page": 2, "chunk_index": 0}]
+
+
+@pytest.mark.asyncio
+async def test_dense_high_score_no_fallback(app_client, monkeypatch):
+    store = FakeHybridStore(dense=DENSE_HIT, sparse=SPARSE_HIT)
+    monkeypatch.setattr(retrieval_module, "get_vector_store", lambda: store)
+    result = await retrieval_module.vector_search("kb1", "Transformer 是什么")
+    assert result[0]["doc_id"] == "doc1"
+    assert result[0].get("search_type") == "dense"
+
+
+@pytest.mark.asyncio
+async def test_dense_empty_falls_back_to_sparse(app_client, monkeypatch):
+    store = FakeHybridStore(dense=[], sparse=SPARSE_HIT)
+    monkeypatch.setattr(retrieval_module, "get_vector_store", lambda: store)
+    result = await retrieval_module.vector_search("kb1", "alpha beta")
+    assert result[0]["doc_id"] == "doc2"
+    assert result[0].get("search_type") == "sparse"
+
+
+@pytest.mark.asyncio
+async def test_dense_low_score_falls_back_to_sparse(app_client, monkeypatch):
+    store = FakeHybridStore(dense=DENSE_LOW, sparse=SPARSE_HIT)
+    monkeypatch.setattr(retrieval_module, "get_vector_store", lambda: store)
+    result = await retrieval_module.vector_search("kb1", "alpha beta")
+    assert result[0]["doc_id"] == "doc2"
+    assert result[0].get("search_type") == "sparse"
+
+
+@pytest.mark.asyncio
+async def test_both_empty_returns_empty(app_client, monkeypatch):
+    store = FakeHybridStore(dense=[], sparse=[])
+    monkeypatch.setattr(retrieval_module, "get_vector_store", lambda: store)
+    result = await retrieval_module.vector_search("kb1", "什么都不存在")
+    assert result == []
+
+
 @pytest.mark.asyncio
 async def test_web_intent_triggers_web_search(app_client, monkeypatch, sample_chunks):
     calls = []
