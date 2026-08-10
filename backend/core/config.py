@@ -71,6 +71,7 @@ class AppConfig:
     jwt_expire_days: int = 7
     storage_dir: str = "./data/uploads"
     retrieval_top_k: int = 5
+    retrieval_dense_threshold: float = 0.35
     chunk_size: int = 800
     chunk_overlap: int = 100
 
@@ -101,6 +102,7 @@ class AppConfig:
         self.jwt_expire_days = int(os.getenv("JWT_EXPIRE_DAYS", "7"))
         self.storage_dir = os.getenv("STORAGE_DIR", "./data/uploads")
         self.retrieval_top_k = int(os.getenv("RETRIEVAL_TOP_K", "5"))
+        self.retrieval_dense_threshold = float(os.getenv("RETRIEVAL_DENSE_THRESHOLD", "0.35"))
         self.chunk_size = int(os.getenv("CHUNK_SIZE", "800"))
         self.chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "100"))
 
