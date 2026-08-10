@@ -24,7 +24,16 @@ def kb_id(app_client, auth_headers):
                            json={"name": "流式测试库", "description": ""},
                            headers=auth_headers)
     assert resp.status_code == 200, resp.text
-    return resp.json()["id"]
+    kb_id = resp.json()["id"]
+    # 非空知识库: 附带一个文档, 使提问走正常检索链路而非空库反问
+    from backend.core.database import get_db_session
+    from backend.models.database import Document
+    db = get_db_session()
+    db.add(Document(id=f"doc-{kb_id}", kb_id=kb_id, filename="stream.pdf",
+                    file_path="/tmp/stream.pdf"))
+    db.commit()
+    db.close()
+    return kb_id
 
 
 @pytest.fixture()

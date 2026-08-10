@@ -1,6 +1,7 @@
 """会话与消息路由 - SSE 流式问答 (RetrieverAgent → AnswerAgent 管线)"""
 import json
 import logging
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -10,13 +11,30 @@ from sqlalchemy.orm import Session
 from backend.agents import answer_agent, retriever_agent
 from backend.api.routes.auth import get_current_user
 from backend.core.database import get_db
-from backend.models.database import Conversation, KnowledgeBase, Message, User
+from backend.models.database import Conversation, Document, KnowledgeBase, Message, User
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/conversations", tags=["会话"])
 
 HISTORY_LIMIT = 10
+
+EMPTY_KB_FALLBACK = "当前知识库还没有任何文档。知识库中未找到与『{question}』相关的内容。是否需要联网搜索?回复『需要』即可。"
+NO_RESULT_FALLBACK = "知识库中未找到与『{question}』相关的内容。是否需要联网搜索?回复『需要』即可。"
+WEB_UNAVAILABLE = "联网搜索当前不可用(未配置 TAVILY_API_KEY), 请换个问法或上传相关文档后重试。"
+CONFIRM_WORDS = ("需要", "要", "好", "是", "可以", "联网", "搜索", "用")
+_RE_FALLBACK_QUESTION = re.compile(r"未找到与『(.+?)』相关的内容")
+
+
+def _confirm_question(history: list[dict], question: str) -> tuple[str, bool]:
+    """反问确认识别: 最近助手消息是反问模板且本次回复为确认词时, 返回(原问题, True)"""
+    q = question.strip().strip("。.!！?？ ")
+    last_assistant = next((m for m in reversed(history) if m["role"] == "assistant"), None)
+    if last_assistant:
+        m = _RE_FALLBACK_QUESTION.search(last_assistant["content"] or "")
+        if m and q in CONFIRM_WORDS:
+            return m.group(1), True
+    return question, False
 
 
 class ConvCreate(BaseModel):
@@ -98,23 +116,52 @@ async def ask(conv_id: str,
               user: User = Depends(get_current_user)):
     """SSE 流式问答: status → chunk* → citations → done / error (PRD §6.2)"""
     conv = _get_owned_conv(db, conv_id, user)
+    _check_kb_owned(db, conv.kb_id, user)
     question = req.question.strip()
 
     history_rows = db.query(Message).filter(Message.conversation_id == conv_id) \
         .order_by(Message.created_at.desc()).limit(HISTORY_LIMIT).all()
     history = [{"role": m.role, "content": m.content} for m in reversed(history_rows)]
 
-    user_msg = Message(conversation_id=conv_id, role="user", content=question)
+    doc_count = db.query(Document).filter(Document.kb_id == conv.kb_id).count()
+    question, force_web = _confirm_question(history, question)
+
+    user_msg = Message(conversation_id=conv_id, role="user", content=req.question.strip())
     db.add(user_msg)
     db.commit()
 
+    async def _finish_fallback(text: str):
+        """反问/不可用回复: 固定文本入库 + citations + done, 不调用大模型"""
+        assistant_msg = Message(conversation_id=conv_id, role="assistant",
+                                content=text, citations_json=None)
+        db.add(assistant_msg)
+        if conv.title == "新对话":
+            conv.title = text[:20]
+        db.commit()
+        yield _sse("citations", {"items": []})
+        yield _sse("done", {"message_id": assistant_msg.id})
+
     async def gen():
         try:
+            if doc_count == 0 and not force_web:
+                text = EMPTY_KB_FALLBACK.format(question=question)
+                yield _sse("status", {"text": "知识库为空, 未进行检索"})
+                async for ev in _finish_fallback(text):
+                    yield ev
+                return
+
             yield _sse("status", {"text": "正在检索知识库..."})
-            retrieval = await retriever_agent.retrieve(question, conv.kb_id)
+            retrieval = await retriever_agent.retrieve(question, conv.kb_id, force_web=force_web)
             chunks, web_results = retrieval["chunks"], retrieval["web_results"]
-            if not chunks:
-                yield _sse("status", {"text": "知识库中未检索到相关内容, 将基于已有知识作答"})
+            if not chunks and not web_results:
+                if force_web:
+                    text = WEB_UNAVAILABLE
+                else:
+                    text = NO_RESULT_FALLBACK.format(question=question)
+                yield _sse("status", {"text": "知识库中未检索到相关内容"})
+                async for ev in _finish_fallback(text):
+                    yield ev
+                return
 
             answer_parts = []
             citations = []

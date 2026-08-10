@@ -15,6 +15,37 @@ import backend.core.llm_adapter as llm_adapter_module
 from backend.models.database import Base
 
 
+@pytest.fixture(autouse=True)
+def dual_vector_collection(monkeypatch):
+    """确保测试环境 Qdrant collection 为双向量结构 (dense + sparse), 测试后清理"""
+    from qdrant_client.models import Distance, VectorParams, SparseVectorParams
+    from backend.core.vector_store import VectorStore
+
+    def _ensure(self):
+        dim = getattr(self, '_embed_dim', 768)
+        try:
+            self.client.get_collection(self.collection_name)
+        except Exception:
+            self.client.create_collection(
+                collection_name=self.collection_name,
+                vectors_config={"dense": VectorParams(size=dim, distance=Distance.COSINE)},
+                sparse_vectors_config={"sparse": SparseVectorParams()},
+            )
+
+    monkeypatch.setattr(VectorStore, "_ensure_collection", _ensure)
+    yield
+    try:
+        from backend.core.vector_store import get_vector_store
+        vs = get_vector_store()
+        vs.client.delete_collection(vs.collection_name)
+        vs.close()
+    except Exception:
+        pass
+    # 重置单例, 避免下个测试复用已删除 collection 的旧实例
+    import backend.core.vector_store as vs_module
+    vs_module._store = None
+
+
 class FakeLLM:
     """测试用伪 LLM: 输出固定 token(含 [1] 引用标注), fail=True 模拟生成故障"""
 
@@ -46,7 +77,7 @@ def fake_llm(monkeypatch):
 def fake_retrieve(monkeypatch):
     """替换 retriever_agent.retrieve, 不依赖真实向量库"""
 
-    async def _fake(question, kb_id, top_k=5):
+    async def _fake(question, kb_id, top_k=5, force_web=False):
         return {
             "chunks": [
                 {"text": "Transformer 使用自注意力机制计算上下文", "doc_id": "doc1",
