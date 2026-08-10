@@ -131,13 +131,17 @@ async def ask(conv_id: str,
     db.commit()
 
     async def _finish_fallback(text: str):
-        """反问/不可用回复: 固定文本入库 + citations + done, 不调用大模型"""
+        """反问/不可用回复: 固定文本以 chunk 流式下发 + 入库 + citations + done, 不调用大模型
+
+        chunk 事件必不可少: 前端仅累积 chunk 内容, 无 chunk 则答案不会渲染, 需刷新才能看到
+        """
         assistant_msg = Message(conversation_id=conv_id, role="assistant",
                                 content=text, citations_json=None)
         db.add(assistant_msg)
         if conv.title == "新对话":
             conv.title = text[:20]
         db.commit()
+        yield _sse("chunk", {"text": text})
         yield _sse("citations", {"items": []})
         yield _sse("done", {"message_id": assistant_msg.id})
 

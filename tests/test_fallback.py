@@ -42,11 +42,14 @@ def _ask(app_client, conv_id, question, headers):
 
 
 def test_empty_kb_asks_web_fallback(app_client, auth_headers, kb_id, conv_id):
-    """空库: 固定反问, 事件序列 status -> done, 无 chunk"""
+    """空库: 固定反问, 事件序列 status -> chunk -> citations -> done"""
     resp = _ask(app_client, conv_id, "什么是机器学习", auth_headers)
     events = _parse_sse(resp.text)
     types = [e for e, _ in events]
-    assert types == ["status", "citations", "done"]
+    assert types == ["status", "chunk", "citations", "done"]
+    # 兜底文本必须走 chunk 下发, 前端才无需刷新即可显示
+    answer = "".join(data["text"] for e, data in events if e == "chunk")
+    assert "还没有任何文档" in answer
     msg = app_client.get(f"/api/v1/conversations/{conv_id}/messages",
                          headers=auth_headers).json()
     assert msg[1]["role"] == "assistant"
@@ -74,8 +77,12 @@ def test_no_result_asks_web_fallback(app_client, auth_headers, kb_id, conv_id, m
     events = _parse_sse(resp.text)
     types = [e for e, _ in events]
     assert types[0] == "status"
+    assert "chunk" in types
     assert types[-2] == "citations"
     assert types[-1] == "done"
+    # 兜底文本走 chunk 下发, 含原问题供确认词轮次提取
+    answer = "".join(data["text"] for e, data in events if e == "chunk")
+    assert "未找到与『怎么种苹果』相关的内容" in answer
     msg = app_client.get(f"/api/v1/conversations/{conv_id}/messages",
                          headers=auth_headers).json()
     assert "未找到与『怎么种苹果』相关的内容" in msg[1]["content"]
