@@ -24,3 +24,6 @@ Thumbs.db
 
 # Windows bash crash dumps
 *.stackdump
+
+# 开发日志
+DEV_LOG.md

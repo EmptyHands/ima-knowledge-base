@@ -14,31 +14,31 @@
 
 ```mermaid
 flowchart LR
-    subgraph 前端 [React + Vite + Tailwind + shadcn/ui]
-        U[用户] --> LOGIN[登录/注册]
-        U --> UPLOAD[上传对话框]
-        U --> CHAT[聊天区]
-        CHAT --> SSE[SSE 流式解析]
-        SSE --> MARKDOWN[Markdown 渲染 + [n] 角标]
-        MARKDOWN --> CARD[引用卡片]
+    subgraph FE["前端 (React + Vite + Tailwind + shadcn/ui)"]
+        U["用户"] --> LOGIN["登录/注册"]
+        U --> UPLOAD["上传对话框"]
+        U --> CHAT["聊天区"]
+        CHAT --> SSE["SSE 流式解析"]
+        SSE --> MARKDOWN["Markdown 渲染 + [n] 角标"]
+        MARKDOWN --> CARD["引用卡片"]
     end
-    subgraph 后端 [FastAPI]
-        AUTH[JWT 认证]
-        DOC[文档路由]
-        DOC --> PARSE[文件解析 pdfplumber/python-docx]
-        PARSE --> CHUNK[分块器 800字符/100重叠]
-        CHUNK --> EMBED[Embedding bge-m3]
-        EMBED --> QDRANT[(Qdrant 向量库)]
-        ASK[问答路由 SSE]
-        ASK --> RET[RetrieverAgent]
+    subgraph BE["后端 (FastAPI)"]
+        AUTH["JWT 认证"]
+        DOC["文档路由"]
+        DOC --> PARSE["文件解析 pdfplumber/python-docx"]
+        PARSE --> CHUNK["分块器 800字符/100重叠"]
+        CHUNK --> EMBED["Embedding bge-m3"]
+        EMBED --> QDRANT[("Qdrant 向量库")]
+        ASK["问答路由 SSE"]
+        ASK --> RET["RetrieverAgent"]
         RET --> QDRANT
-        RET --> WEB[Tavily 网络搜索]
-        RET --> ANS[AnswerAgent]
-        ANS --> CIT[CitationAgent 引用校验]
+        RET --> WEB["Tavily 网络搜索"]
+        RET --> ANS["AnswerAgent"]
+        ANS --> CIT["CitationAgent 引用校验"]
         ANS --> CHAT
         CIT --> SSE
     end
-    META[(SQLite: 用户/知识库/文档/会话/消息)]
+    META[("SQLite: 用户/知识库/文档/会话/消息")]
     DOC --> META
     ASK --> META
 ```
@@ -108,6 +108,15 @@ venv/Scripts/python.exe -m pytest tests/ -v
 
 - 只支持**文本型** PDF(扫描件无文本层会标记解析失败);OCR 见扩展方向
 - LLM 引用标注格式不稳定:引用列表走 SSE 结构化下发 + 校验 Agent 兜底,不解析 LLM 原文格式
+
+## 未来扩展
+
+## 版本变更记录
+
+| 版本 | 日期 | 变更 |
+|------|------|------|
+| v1.0.1 | 2026-08-10 | 修复 DEV-001:README 流程图无法渲染(嵌套方括号语法错误) |
+| v1.0.0 | 2026-08-10 | 初始版本 |
 
 ## 未来扩展
 
