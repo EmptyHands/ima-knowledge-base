@@ -55,7 +55,90 @@ def test_citation_context_extracts_sentence():
     assert "第二句" not in ctx
 
 
-def test_overlap_ratio_bounds():
-    assert citation_agent.overlap_ratio("完全相同的文本", "完全相同的文本") == 1.0
-    assert citation_agent.overlap_ratio("毫不相关的内容", "完全不同的主题") == 0.0
-    assert citation_agent.overlap_ratio("", "任意文本") == 0.0
+def test_citation_context_segments_multi_citation_sentence():
+    """一句话引用两个片段时, 上下文按 [n] 分段, 互不稀释"""
+    text = "Transformer 使用自注意力机制计算上下文[1], 反向传播通过梯度更新权重[2]。"
+    ctx1 = citation_agent.citation_context(text, text.index("[1]"))
+    ctx2 = citation_agent.citation_context(text, text.index("[2]"))
+    assert "Transformer" in ctx1 and "反向传播" not in ctx1
+    assert "反向传播" in ctx2 and "Transformer" not in ctx2
+
+
+def test_citation_context_backtracks_when_marker_after_punctuation():
+    """[n] 紧跟句号后(如 "…避免。[1]")时上下文为空, 应回溯到上一句"""
+    text = "第一点完全无关的铺垫, 然后经验可以复用, 记住曾犯的错误, 下次就能避免。[1]"
+    ctx = citation_agent.citation_context(text, text.index("[1]"))
+    assert "避免" in ctx
+    assert len(ctx) >= citation_agent.MIN_SEGMENT_CHARS
+
+
+def test_citation_after_period_verified():
+    """回归: 真实 LLM 常在句号后标注 [n], 回溯后应能校验引用"""
+    chunk_text = "经验可以复用, 记住曾犯的错误, 下次就能避免。大模型本身没有记忆, 每次对话从零开始。"
+    chunk = {"text": chunk_text, "doc_id": "doc1", "page": 1, "doc_name": "agent_memory.txt", "score": 0.8}
+    answer = "经验可以复用, 记住曾犯的错误, 下次就能避免。[1]"
+    citations = citation_agent.build_citations(answer, [chunk])
+    assert citations[0]["verified"] is True
+
+
+def test_citation_context_meta_commentary_short_context_not_verified():
+    """元评论式回答(如"知识库中片段[1]为标题")上下文过短, 不应被判为有原文依据"""
+    chunk = {"text": "第一部分 为什么 Agent 需要记忆", "doc_id": "doc1", "page": 9,
+             "doc_name": "agent_memory.txt", "score": 0.89}
+    answer = "知识库中片段[1]为标题“第一部分 为什么 Agent 需要记忆”, 但未提供具体说明。"
+    citations = citation_agent.build_citations(answer, [chunk])
+    assert citations[0]["verified"] is False
+
+
+def test_containment_ratio_bounds():
+    assert citation_agent.containment_ratio("完全相同的文本", "完全相同的文本") == 1.0
+    assert citation_agent.containment_ratio("毫不相关的内容", "完全不同的主题") == 0.0
+    assert citation_agent.containment_ratio("", "任意文本") == 0.0
+
+
+def test_containment_ratio_robust_to_chunk_length():
+    """DEV-002 回归: Jaccard 时逐字引用会被长 chunk 稀释到 0.05, 包含率应保持 1.0"""
+    chunk = ("这是第一句完全没有用的铺垫内容, " * 30) + "本产品支持七天内无理由退换货。"
+    quote = "本产品支持七天内无理由退换货。"
+    assert citation_agent.containment_ratio(quote, chunk) == 1.0
+
+
+def test_long_chunk_verbatim_quote_verified():
+    """DEV-002 回归: 800 字 chunk 中逐字引用 40 字原文必须 verified=True"""
+    filler = " ".join(f"第{i}条无关的背景资料, 具体条款说明如下, 敬请用户参考并确认。" for i in range(15))
+    chunk_text = filler + "本产品支持七天内无理由退换货, 超过七天按折旧价格退款, 运费由买家承担。"
+    chunk = {"text": chunk_text, "doc_id": "doc1", "page": 2, "doc_name": "policy.pdf", "score": 0.75}
+    answer = "本产品支持七天内无理由退换货, 超过七天按折旧价格退款, 运费由买家承担[1]。\n## 引用\n[1] policy.pdf, 第2页"
+    citations = citation_agent.build_citations(answer, [chunk])
+    assert len(citations) == 1
+    assert citations[0]["verified"] is True
+
+
+def test_fabricated_citation_in_long_chunk_not_verified():
+    chunk_text = " ".join(f"第{i}条无关的背景资料, 具体条款说明如下, 敬请用户参考并确认。" for i in range(15))
+    chunk = {"text": chunk_text, "doc_id": "doc1", "page": 2, "doc_name": "policy.pdf", "score": 0.75}
+    answer = "地球是平的, 所有海洋都结冰, 太阳围绕月亮旋转, 猫会说话[1]。"
+    citations = citation_agent.build_citations(answer, [chunk])
+    assert citations[0]["verified"] is False
+
+
+def test_short_context_not_verified_by_coincidence():
+    """过短上下文(如"是[1]")不应因常见二元组巧合而被判定有原文依据"""
+    chunk = {"text": "这是核心原理, 请仔细理解。", "doc_id": "doc1", "page": 1,
+             "doc_name": "t.pdf", "score": 0.5}
+    answer = "是[1]。"
+    citations = citation_agent.build_citations(answer, [chunk])
+    assert citations[0]["verified"] is False
+
+
+def test_doc_level_citation_still_carries_source_metadata():
+    """DEV-007: 降级引用(verified=False)仍须携带 doc_name/page, 供前端文档级展示"""
+    chunk = {"text": "这是核心原理, 请仔细理解。", "doc_id": "doc1", "page": 7,
+             "doc_name": "guide.pdf", "score": 0.5}
+    answer = "根据我自己的经验, 直接回答这个问题[1]。"
+    citations = citation_agent.build_citations(answer, [chunk])
+    assert len(citations) == 1
+    c = citations[0]
+    assert c["verified"] is False
+    assert c["doc_name"] == "guide.pdf"
+    assert c["page"] == 7

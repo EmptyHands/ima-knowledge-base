@@ -143,16 +143,15 @@ function ChatArea({ kbId, convId, onNewConv, onConversationUpdated }: ChatAreaPr
           <button
             key={c.n}
             onClick={() => setActiveCitation(c)}
-            title={c.snippet}
+            title={c.verified ? c.snippet : `${c.doc_name} · 第${c.page}页`}
             className={cn(
               "rounded-md px-2 py-0.5 text-xs transition-colors",
               c.verified
                 ? "bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-                : "cursor-not-allowed border border-dashed border-destructive/50 text-muted-foreground/50",
+                : "border border-dashed border-muted-foreground/40 text-muted-foreground/60 hover:bg-accent hover:text-accent-foreground",
             )}
           >
             [{c.n}] {c.doc_name} · 第{c.page}页
-            {!c.verified && <span className="ml-1">(无直接引用来源)</span>}
           </button>
         ))}
       </div>

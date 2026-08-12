@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, FileText } from "lucide-react"
+import { CheckCircle2, FileText } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -26,19 +26,12 @@ function CitationCard({ citation, onClose }: CitationCardProps) {
             {citation ? `第 ${citation.page} 页` : ""}
           </DialogDescription>
         </DialogHeader>
-        {citation && (
+        {citation && citation.verified && (
           <>
-            {citation.verified ? (
-              <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-600">
-                <CheckCircle2 className="size-3.5" />
-                该结论有原文依据
-              </div>
-            ) : (
-              <div className="flex items-center gap-1.5 text-xs font-medium text-amber-600">
-                <AlertTriangle className="size-3.5" />
-                该结论无直接引用来源
-              </div>
-            )}
+            <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-600">
+              <CheckCircle2 className="size-3.5" />
+              该结论有原文依据
+            </div>
             <blockquote className="max-h-60 overflow-y-auto rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
               {citation.snippet}
             </blockquote>

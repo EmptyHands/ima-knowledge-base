@@ -5,7 +5,7 @@ from backend.agents.citation_agent import build_citations
 from backend.core.llm_adapter import get_llm
 
 SYSTEM_PROMPT = """你基于以下检索片段回答问题。规则:
-1. 回答内容来自某片段时,句末标注 [n](n 为片段编号)
+1. 回答内容来自某片段时,在引用内容最后一个字后面、句号之前标注 [n](n 为片段编号);一句话引用多个片段时,在各自内容处分别标注
 2. 无依据的部分明确说明"知识库中未找到相关依据"
 3. 回答末尾输出"## 引用"列表: [n] 文档名, 第x页
 4. 不要编造片段中不存在的内容"""

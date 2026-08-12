@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.core.database import init_database  # noqa: E402
+from backend.services.document_service import reconcile_missing_vectors  # noqa: E402
 from backend.api.routes import auth, chat, documents, knowledge_bases  # noqa: E402
 
 logging.basicConfig(
@@ -23,6 +24,10 @@ async def lifespan(app: FastAPI):
     logger.info("Starting ima-knowledge-base...")
     init_database()
     logger.info("Database initialized")
+    try:
+        await reconcile_missing_vectors()
+    except Exception as e:
+        logger.warning(f"向量对账失败(不影响启动): {e}")
     yield
     logger.info("Shutting down ima-knowledge-base...")
 
