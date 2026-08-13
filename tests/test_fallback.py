@@ -157,3 +157,49 @@ def test_confirmed_but_web_unavailable(app_client, auth_headers, kb_id, conv_id,
     msg = app_client.get(f"/api/v1/conversations/{conv_id}/messages",
                          headers=auth_headers).json()
     assert "联网搜索" in msg[-1]["content"]
+
+
+def test_empty_llm_output_falls_back(app_client, auth_headers, kb_id, conv_id, monkeypatch):
+    """检索有片段但 LLM 流式输出为空: 回退反问模板, 不落空消息(刷新后无空白气泡)"""
+    from backend.models.database import Document
+    from backend.core.database import get_db_session
+    db = get_db_session()
+    db.add(Document(id="doc-empty-llm", kb_id=kb_id, filename="x.pdf", file_path="/tmp/x.pdf"))
+    db.commit()
+    db.close()
+
+    import backend.agents.retriever_agent as retriever_module
+
+    async def _fake_retrieve(question, kb_id, top_k=5, force_web=False):
+        return {"chunks": [{"text": "Transformer 使用自注意力机制", "doc_id": "doc1",
+                            "page": 1, "doc_name": "t.pdf", "score": 0.7}],
+                "web_results": []}
+
+    monkeypatch.setattr(retriever_module, "retrieve", _fake_retrieve)
+
+    from backend.core import llm_adapter
+
+    class EmptyLLM:
+        async def astream(self, prompt, system_prompt=None):
+            for _ in []:
+                yield ""
+
+        async def ainvoke(self, prompt, system_prompt=None, **kwargs):
+            return ""
+
+    monkeypatch.setattr(llm_adapter, "_llm_adapter", EmptyLLM())
+
+    resp = _ask(app_client, conv_id, "当前问题无法回答", auth_headers)
+    events = _parse_sse(resp.text)
+    types = [e for e, _ in events]
+    assert "chunk" in types
+    assert types[-2] == "citations"
+    assert types[-1] == "done"
+    # 兜底文本走 chunk 下发, 含原问题供确认词轮次提取
+    answer = "".join(data["text"] for e, data in events if e == "chunk")
+    assert "未找到与『当前问题无法回答』相关的内容" in answer
+    msgs = app_client.get(f"/api/v1/conversations/{conv_id}/messages",
+                          headers=auth_headers).json()
+    assistant = [m for m in msgs if m["role"] == "assistant"]
+    assert assistant, "应有助手兜底消息"
+    assert assistant[-1]["content"].strip(), "兜底消息非空, 刷新后不应出现空白气泡"

@@ -21,6 +21,7 @@ HISTORY_LIMIT = 10
 
 EMPTY_KB_FALLBACK = "当前知识库还没有任何文档。知识库中未找到与『{question}』相关的内容。是否需要联网搜索?回复『需要』即可。"
 NO_RESULT_FALLBACK = "知识库中未找到与『{question}』相关的内容。是否需要联网搜索?回复『需要』即可。"
+NO_ANSWER_FALLBACK = "未能基于检索内容生成回答。知识库中未找到与『{question}』相关的内容。是否需要联网搜索?回复『需要』即可。"
 WEB_UNAVAILABLE = "联网搜索当前不可用(未配置 TAVILY_API_KEY), 请换个问法或上传相关文档后重试。"
 CONFIRM_WORDS = ("需要", "要", "好", "是", "可以", "联网", "搜索", "用")
 _RE_FALLBACK_QUESTION = re.compile(r"未找到与『(.+?)』相关的内容")
@@ -178,8 +179,17 @@ async def ask(conv_id: str,
                 else:
                     yield _sse("status", {"text": event["data"]})
 
+            answer = "".join(answer_parts).strip()
+            if not answer:
+                # LLM 未输出任何内容(如无法依据检索片段回答时流式返回空): 不落空消息,
+                # 与无结果分支一致回退为反问, 避免刷新后出现空白气泡
+                yield _sse("status", {"text": "未能生成有效回答"})
+                async for ev in _finish_fallback(NO_ANSWER_FALLBACK.format(question=question)):
+                    yield ev
+                return
+
             assistant_msg = Message(conversation_id=conv_id, role="assistant",
-                                    content="".join(answer_parts),
+                                    content=answer,
                                     citations_json=citations or None)
             db.add(assistant_msg)
             if conv.title == "新对话":
