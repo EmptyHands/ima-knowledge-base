@@ -120,7 +120,7 @@ async def test_web_intent_triggers_web_search(app_client, monkeypatch, sample_ch
         return [{"title": "标题", "url": "https://example.com", "snippet": "摘要"}]
 
     monkeypatch.setattr(retrieval_module, "get_vector_store", lambda: FakeStore(sample_chunks))
-    monkeypatch.setattr(retriever_module, "web_search", fake_web_search)
+    monkeypatch.setattr(retrieval_module, "web_search", fake_web_search)
 
     result = await retriever_module.retrieve("最新的行业动态", "kb1")
     assert calls == ["最新的行业动态"]
@@ -140,7 +140,7 @@ async def test_retrieve_force_web_triggers_web_search(app_client, monkeypatch, s
         return [{"title": "标题", "url": "https://example.com", "snippet": "摘要"}]
 
     monkeypatch.setattr(retrieval_module, "get_vector_store", lambda: FakeStore(sample_chunks))
-    monkeypatch.setattr(retriever_module, "web_search", fake_web_search)
+    monkeypatch.setattr(retrieval_module, "web_search", fake_web_search)
 
     # 无网络意图, 但 force_web=True 仍应触发联网
     await retriever_module.retrieve("知识库如何分块", "kb1", force_web=True)
