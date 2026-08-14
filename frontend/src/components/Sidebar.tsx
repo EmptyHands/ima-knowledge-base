@@ -75,7 +75,7 @@ function Sidebar({
               <div
                 key={kb.id}
                 className={cn(
-                  "group flex items-center rounded-md transition-colors",
+                  "group flex min-w-0 items-center rounded-md transition-colors",
                   kb.id === selectedKbId
                     ? "bg-accent text-accent-foreground font-medium"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground",

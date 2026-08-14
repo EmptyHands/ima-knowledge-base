@@ -41,7 +41,7 @@ function ConversationList({
           <div
             key={c.id}
             className={cn(
-              "group flex items-center rounded-md transition-colors",
+              "group flex min-w-0 items-center rounded-md transition-colors",
               c.id === selectedConvId
                 ? "bg-accent font-medium text-accent-foreground"
                 : "text-muted-foreground hover:bg-muted hover:text-foreground",

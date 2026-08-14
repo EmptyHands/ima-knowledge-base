@@ -93,3 +93,10 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Radix ScrollArea 内层包装为 display:table + min-width:100%,
+   按内容 max-content 撑宽容器; 侧边栏长标题因此把右侧按钮挤出视口(DEV-008)。
+   改回 block 使其填满视口宽度, 内部 min-w-0/truncate 截断链生效 */
+[data-slot="scroll-area-viewport"] > div {
+  display: block !important;
+}
