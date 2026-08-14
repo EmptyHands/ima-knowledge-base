@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backend.core.database import init_database  # noqa: E402
 from backend.services.document_service import reconcile_missing_vectors  # noqa: E402
 from backend.api.routes import auth, chat, documents, knowledge_bases  # noqa: E402
+from backend.mcp.transport import router as mcp_router  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,6 +52,7 @@ app.include_router(auth.router)
 app.include_router(knowledge_bases.router)
 app.include_router(documents.router)
 app.include_router(chat.router)
+app.include_router(mcp_router)
 
 
 @app.get("/health")

@@ -69,6 +69,7 @@ class AppConfig:
     database_url: str = f"sqlite:///{_DEFAULT_DB}"
     jwt_secret: str = "change-me"
     jwt_expire_days: int = 7
+    mcp_api_key: str = ""
     storage_dir: str = "./data/uploads"
     retrieval_top_k: int = 5
     retrieval_dense_threshold: float = 0.35
@@ -100,6 +101,7 @@ class AppConfig:
         self.log_level = os.getenv("LOG_LEVEL", "INFO")
         self.jwt_secret = os.getenv("JWT_SECRET", "change-me")
         self.jwt_expire_days = int(os.getenv("JWT_EXPIRE_DAYS", "7"))
+        self.mcp_api_key = os.getenv("MCP_API_KEY", "").strip()
         self.storage_dir = os.getenv("STORAGE_DIR", "./data/uploads")
         self.retrieval_top_k = int(os.getenv("RETRIEVAL_TOP_K", "5"))
         self.retrieval_dense_threshold = float(os.getenv("RETRIEVAL_DENSE_THRESHOLD", "0.35"))
