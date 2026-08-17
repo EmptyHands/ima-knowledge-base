@@ -17,10 +17,14 @@ MAX_HISTORY_CHARS = 500
 
 
 def build_prompt(question: str, history: list[ChatMessage], chunks: list[dict],
-                 web_results: Optional[list[dict]] = None) -> str:
-    """构造提示词: 最近 10 条消息 + 检索片段(截断 800 字, 附编号)"""
+                 web_results: Optional[list[dict]] = None,
+                 include_history: bool = True) -> str:
+    """构造提示词: 最近 10 条消息 + 检索片段(截断 800 字, 附编号)
+
+    include_history=False 时历史由调用方以独立消息传入, 避免重复
+    """
     parts = []
-    if history:
+    if include_history and history:
         lines = []
         for msg in history[-MAX_HISTORY:]:
             role = "用户" if msg.role == "user" else "助手"
@@ -52,7 +56,9 @@ async def stream(question: str, history: list[ChatMessage], chunks: list[dict],
     """流式回答: 依次 yield {"type": "status"} → {"type": "chunk", "data": token} → {"type": "citations", "data": [...]}"""
     yield {"type": "status", "data": "检索完成, 正在生成回答"}
     llm = llm or get_llm()
-    messages = [*history, ChatMessage(role="user", content=question)]
+    # 检索片段与网络结果随最后一条用户消息进入 LLM 请求, 历史保持独立消息(DEV-018)
+    content = build_prompt(question, history, chunks, web_results or [], include_history=False)
+    messages = [*history, ChatMessage(role="user", content=content)]
     answer_parts = []
     async for token in llm.astream(messages, system_prompt=SYSTEM_PROMPT):
         answer_parts.append(token)

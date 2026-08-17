@@ -11,6 +11,18 @@ class FakeLLM:
             yield token
 
 
+class CapturingLLM:
+    """记录 astream 收到的 messages, 用于断言 LLM 请求内容 (DEV-018)"""
+
+    def __init__(self):
+        self.messages = None
+
+    async def astream(self, messages, system_prompt=None):
+        self.messages = list(messages)
+        for token in ["回答", "[1]"]:
+            yield token
+
+
 @pytest.fixture
 def chunks():
     return [
@@ -86,6 +98,25 @@ def test_build_citations_maps_numbers_to_chunks(chunks):
 def test_build_citations_skips_out_of_range(chunks):
     citations = citation_agent.build_citations("答案[9]越界", chunks)
     assert citations == []
+
+
+@pytest.mark.asyncio
+async def test_stream_passes_chunks_and_web_to_llm(chunks):
+    """DEV-018: LLM 请求必须携带检索片段与网络结果, 而非仅裸问题"""
+    web = [{"title": "T1", "url": "https://a.com", "snippet": "s1"}]
+    history = [ChatMessage(role="user", content="上一轮问题"),
+               ChatMessage(role="assistant", content="上一轮回答")]
+    llm = CapturingLLM()
+    events = [e async for e in answer_agent.stream("最新问题", history, chunks, web, llm=llm)]
+    assert events
+
+    assert llm.messages is not None
+    assert [m.role for m in llm.messages] == ["user", "assistant", "user"], "历史保持独立消息"
+    content = llm.messages[-1].content
+    assert "Transformer 使用自注意力机制计算上下文" in content, "检索片段必须进入 LLM 请求"
+    assert "https://a.com" in content, "网络结果必须进入 LLM 请求"
+    assert "问题: 最新问题" in content
+    assert "上一轮问题" not in content, "历史以独立消息传入, 不应在用户消息内重复"
 
 
 @pytest.mark.asyncio

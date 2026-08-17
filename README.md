@@ -151,6 +151,7 @@ venv/Scripts/python.exe -m pytest tests/ -v
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v1.3.1 | 2026-08-17 | 修复 DEV-018:检索片段与网络结果未进入 LLM 请求(DEV-011 接口升级回归)— stream 用户消息恢复携带检索内容,历史保持独立多轮消息 |
 | v1.3.0 | 2026-08-17 | 新增 DEV-011:统一消息抽象 — Pydantic ChatMessage(角色/内容/元数据)贯穿路由/answer_agent/LLM 适配器,LLM 请求升级为结构化多轮 messages |
 | v1.1.0 | 2026-08-14 | 新增 DEV-013:MCP 工具协议扩展 — 手写轻量 MCP 服务器(工具注册表/JSON-RPC 2.0 子集/SSE 传输/共享密钥鉴权),web_search、vector_search、kb_status 封装为 MCP 工具,retriever_agent 内部调用改走注册表 |
 | v1.0.9 | 2026-08-14 | 修复 DEV-008:会话管理框新增/删除按钮有几率消失(Radix ScrollArea 内层 table 包装按内容 max-content 撑宽挤出按钮,改回 block + 行补 min-w-0 恢复截断链) |
