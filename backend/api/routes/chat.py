@@ -141,7 +141,7 @@ async def ask(conv_id: str,
                                 content=text, citations_json=None)
         db.add(assistant_msg)
         if conv.title == "新对话":
-            conv.title = text[:20]
+            conv.title = question[:20]
         db.commit()
         yield _sse("chunk", {"text": text})
         yield _sse("citations", {"items": []})

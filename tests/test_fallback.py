@@ -57,6 +57,14 @@ def test_empty_kb_asks_web_fallback(app_client, auth_headers, kb_id, conv_id):
     assert "是否需要联网搜索" in msg[1]["content"]
 
 
+def test_fallback_title_from_question(app_client, auth_headers, kb_id, conv_id):
+    """空库反问分支: 自动标题取用户问题截断, 而非兜底回复原文 (DEV-009)"""
+    question = "这是一句超过二十个字的问题用于验证兜底标题截取逻辑是否正确生效"
+    _ask(app_client, conv_id, question, auth_headers)
+    convs = app_client.get(f"/api/v1/conversations?kb_id={kb_id}", headers=auth_headers).json()
+    assert convs[0]["title"] == question[:20]
+
+
 def test_no_result_asks_web_fallback(app_client, auth_headers, kb_id, conv_id, monkeypatch):
     """有文档但检索全空: 反问带原问题"""
     from backend.models.database import Document
