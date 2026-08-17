@@ -27,3 +27,6 @@ Thumbs.db
 
 # 开发日志
 DEV_LOG.md
+
+# 设计/计划文档(不入库, 本地保留)
+docs/
