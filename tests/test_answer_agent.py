@@ -132,3 +132,27 @@ async def test_stream_event_sequence(chunks):
     citations = events[-1]["data"]
     assert citations[0]["doc_name"] == "transformer.pdf"
     assert citations[0]["page"] == 3
+
+
+@pytest.mark.asyncio
+async def test_stream_injects_summary_as_system_message(chunks):
+    """DEV-015: 传 summary 时, LLM 请求首条为 system 摘要消息, 历史仍独立, 检索内容在用户消息"""
+    history = [ChatMessage(role="user", content="上一轮问题"),
+               ChatMessage(role="assistant", content="上一轮回答")]
+    llm = CapturingLLM()
+    events = [e async for e in answer_agent.stream(
+        "最新问题", history, chunks, [], llm=llm, summary="用户需要跟踪每日价格")]
+    assert events
+    assert llm.messages[0].role == "system"
+    assert "用户需要跟踪每日价格" in llm.messages[0].content
+    assert [m.role for m in llm.messages[1:]] == ["user", "assistant", "user"]
+    assert "Transformer 使用自注意力机制计算上下文" in llm.messages[-1].content
+
+
+@pytest.mark.asyncio
+async def test_stream_without_summary_keeps_message_structure(chunks):
+    """DEV-015 回归: 不传 summary 时消息结构不变"""
+    history = [ChatMessage(role="user", content="上轮"), ChatMessage(role="assistant", content="上答")]
+    llm = CapturingLLM()
+    [e async for e in answer_agent.stream("问题", history, chunks, [], llm=llm)]
+    assert [m.role for m in llm.messages] == ["user", "assistant", "user"]

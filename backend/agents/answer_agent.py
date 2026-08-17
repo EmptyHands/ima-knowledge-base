@@ -52,13 +52,22 @@ def build_prompt(question: str, history: list[ChatMessage], chunks: list[dict],
 
 
 async def stream(question: str, history: list[ChatMessage], chunks: list[dict],
-                 web_results: Optional[list[dict]] = None, llm=None) -> AsyncGenerator[dict, None]:
-    """流式回答: 依次 yield {"type": "status"} → {"type": "chunk", "data": token} → {"type": "citations", "data": [...]}"""
+                 web_results: Optional[list[dict]] = None, llm=None,
+                 summary: Optional[str] = None) -> AsyncGenerator[dict, None]:
+    """流式回答: 依次 yield {"type": "status"} → {"type": "chunk", "data": token} → {"type": "citations", "data": [...]}
+
+    summary: 窗口外历史摘要 (DEV-015), 以 system 消息注入, 历史保持独立消息
+    """
     yield {"type": "status", "data": "检索完成, 正在生成回答"}
     llm = llm or get_llm()
     # 检索片段与网络结果随最后一条用户消息进入 LLM 请求, 历史保持独立消息(DEV-018)
     content = build_prompt(question, history, chunks, web_results or [], include_history=False)
-    messages = [*history, ChatMessage(role="user", content=content)]
+    messages: list[ChatMessage] = []
+    if summary:
+        messages.append(ChatMessage(
+            role="system",
+            content=f"以下是本会话此前的对话摘要(窗口外历史,含关键事实与结论):\n{summary}"))
+    messages += [*history, ChatMessage(role="user", content=content)]
     answer_parts = []
     async for token in llm.astream(messages, system_prompt=SYSTEM_PROMPT):
         answer_parts.append(token)
