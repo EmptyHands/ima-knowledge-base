@@ -12,6 +12,7 @@ from backend.agents import answer_agent, retriever_agent
 from backend.api.routes.auth import get_current_user
 from backend.core.database import get_db
 from backend.models.database import Conversation, Document, KnowledgeBase, Message, User
+from backend.models.messages import ChatMessage
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +28,12 @@ CONFIRM_WORDS = ("需要", "要", "好", "是", "可以", "联网", "搜索", "�
 _RE_FALLBACK_QUESTION = re.compile(r"未找到与『(.+?)』相关的内容")
 
 
-def _confirm_question(history: list[dict], question: str) -> tuple[str, bool]:
+def _confirm_question(history: list[ChatMessage], question: str) -> tuple[str, bool]:
     """反问确认识别: 最近助手消息是反问模板且本次回复为确认词时, 返回(原问题, True)"""
     q = question.strip().strip("。.!！?？ ")
-    last_assistant = next((m for m in reversed(history) if m["role"] == "assistant"), None)
+    last_assistant = next((m for m in reversed(history) if m.role == "assistant"), None)
     if last_assistant:
-        m = _RE_FALLBACK_QUESTION.search(last_assistant["content"] or "")
+        m = _RE_FALLBACK_QUESTION.search(last_assistant.content or "")
         if m and q in CONFIRM_WORDS:
             return m.group(1), True
     return question, False
@@ -122,7 +123,7 @@ async def ask(conv_id: str,
 
     history_rows = db.query(Message).filter(Message.conversation_id == conv_id) \
         .order_by(Message.created_at.desc()).limit(HISTORY_LIMIT).all()
-    history = [{"role": m.role, "content": m.content} for m in reversed(history_rows)]
+    history = [ChatMessage(role=m.role, content=m.content) for m in reversed(history_rows)]
 
     doc_count = db.query(Document).filter(Document.kb_id == conv.kb_id).count()
     question, force_web = _confirm_question(history, question)
