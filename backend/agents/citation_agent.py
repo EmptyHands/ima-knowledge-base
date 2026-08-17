@@ -1,5 +1,6 @@
 """CitationAgent - 引用解析与校验: [n] 上下文与检索片段的重叠率阈值校验"""
 import re
+from typing import Optional
 
 CITATION_PATTERN = re.compile(r"\[(\d+)\]")
 SNIPPET_CHARS = 200
@@ -77,11 +78,14 @@ def _char_bigrams(text: str) -> set[str]:
     return {text[i:i + 2] for i in range(max(0, len(text) - 1))}
 
 
-def build_citations(answer_text: str, chunks: list[dict]) -> list[dict]:
-    """按回答中的 [n] 映射检索片段并校验, 返回 [{n, doc_name, page, snippet, verified}]
+def build_citations(answer_text: str, chunks: list[dict],
+                    web_results: Optional[list[dict]] = None) -> list[dict]:
+    """按回答中的 [n] 映射检索片段/网络结果, 返回 [{n, doc_name, page, snippet, verified, url?}]
 
+    编号规则与 build_prompt 一致: 片段占 [1..len(chunks)], 网络结果延续编号;
     首次出现的编号优先处理(引用列表中的重复编号不再重复校验);
-    低于阈值 0.6 的引用标记 verified=false, 前端灰显"该结论无直接引用来源"
+    低于阈值 0.6 的引用标记 verified=false, 前端灰显"该结论无直接引用来源";
+    网络结果恒 verified=true(来源可点击跳转自证, 搜索摘要短且 LLM 常改写, 包含率校验无意义)
     """
     citations = []
     seen = set()
@@ -90,19 +94,29 @@ def build_citations(answer_text: str, chunks: list[dict]) -> list[dict]:
         if n in seen:
             continue
         seen.add(n)
-        chunk = chunks[n - 1] if 0 <= n - 1 < len(chunks) else None
-        if chunk is None:
-            continue
-        chunk_text = chunk.get("text", "")
-        context = citation_context(answer_text, m.start())
-        # 上下文过短时常见二元组易与 chunk 巧合重叠, 不足以下"有原文依据"的结论
-        verified = len(context) >= MIN_CONTEXT_CHARS and \
-            containment_ratio(context, chunk_text) >= VERIFY_THRESHOLD
-        citations.append({
-            "n": n,
-            "doc_name": chunk.get("doc_name", ""),
-            "page": chunk.get("page", 0),
-            "snippet": chunk_text[:SNIPPET_CHARS],
-            "verified": verified,
-        })
+        web_idx = n - 1 - len(chunks)
+        if 0 <= n - 1 < len(chunks):
+            chunk = chunks[n - 1]
+            chunk_text = chunk.get("text", "")
+            context = citation_context(answer_text, m.start())
+            # 上下文过短时常见二元组易与 chunk 巧合重叠, 不足以下"有原文依据"的结论
+            verified = len(context) >= MIN_CONTEXT_CHARS and \
+                containment_ratio(context, chunk_text) >= VERIFY_THRESHOLD
+            citations.append({
+                "n": n,
+                "doc_name": chunk.get("doc_name", ""),
+                "page": chunk.get("page", 0),
+                "snippet": chunk_text[:SNIPPET_CHARS],
+                "verified": verified,
+            })
+        elif web_results and 0 <= web_idx < len(web_results):
+            w = web_results[web_idx]
+            citations.append({
+                "n": n,
+                "doc_name": w.get("title", ""),
+                "page": 0,
+                "snippet": (w.get("snippet") or "")[:SNIPPET_CHARS],
+                "verified": True,
+                "url": w.get("url", ""),
+            })
     return citations

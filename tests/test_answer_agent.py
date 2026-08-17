@@ -28,6 +28,28 @@ def test_build_prompt_numbers_and_truncates_chunks(chunks):
     assert "问题: Transformer 是什么" in prompt
 
 
+def test_build_prompt_web_results_numbering_continues_after_chunks(chunks):
+    """DEV-018: 网络结果编号延续片段之后, [n] 全局唯一, 与引用映射规则一致"""
+    web = [
+        {"title": "T1", "url": "https://a.com", "snippet": "s1"},
+        {"title": "T2", "url": "https://b.com", "snippet": "s2"},
+    ]
+    prompt = answer_agent.build_prompt("问题", [], chunks, web)
+    assert "[3]" in prompt and "[4]" in prompt
+    assert "[1]" not in prompt.split("网络搜索结果:")[1], "网络结果不应重复从 1 编号"
+    assert "https://a.com" in prompt
+
+
+@pytest.mark.asyncio
+async def test_stream_citations_include_web_results(chunks):
+    """DEV-018: stream 的 citations 事件应包含网络结果映射的引用"""
+    web = [{"title": "T1", "url": "https://a.com", "snippet": "s1"}]
+    events = [e async for e in answer_agent.stream("问题", [], chunks, web, llm=FakeLLM())]
+    citations = events[-1]["data"]
+    assert citations[0]["doc_name"] == "transformer.pdf"
+    assert citations[0]["page"] == 3
+
+
 def test_build_prompt_keeps_last_10_history_messages(chunks):
     history = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"消息{i}"} for i in range(15)]
     prompt = answer_agent.build_prompt("问题", history, chunks)

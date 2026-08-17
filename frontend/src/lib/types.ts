@@ -32,6 +32,8 @@ export interface Citation {
   page: number
   snippet: string
   verified: boolean
+  /** 网络搜索来源的网页地址, 存在即为网页引用 */
+  url?: string
 }
 
 export interface Message {

@@ -109,6 +109,49 @@ def test_error_event_when_llm_fails(app_client, auth_headers, conv_id, fake_retr
     assert [m["role"] for m in messages] == ["user"]
 
 
+def test_web_citation_clickable_via_citations_event(app_client, auth_headers, conv_id, monkeypatch):
+    """DEV-018: 联网回答的 [n] 角标映射到网络结果, citations 事件含 url 且随消息落库"""
+    from backend.core.llm_adapter import LLMProvider
+
+    class WebLLM(LLMProvider):
+        async def astream(self, prompt, system_prompt=None):
+            for token in ["根据", "网络", "搜索[1]", "的回答", "\n## 引用\n", "[1] T1 (https://a.com)"]:
+                yield token
+
+        async def ainvoke(self, prompt, system_prompt=None, **kwargs):
+            return "".join(self._tokens)
+
+    import backend.core.llm_adapter as llm_adapter_module
+    monkeypatch.setattr(llm_adapter_module, "_llm_adapter", WebLLM())
+
+    async def _fake_retrieve_web(question, kb_id, top_k=5, force_web=False):
+        return {
+            "chunks": [],
+            "web_results": [{"title": "T1", "url": "https://a.com", "snippet": "s1"}],
+        }
+
+    import backend.agents.retriever_agent as retriever_agent_module
+    monkeypatch.setattr(retriever_agent_module, "retrieve", _fake_retrieve_web)
+
+    resp = app_client.post(f"/api/v1/conversations/{conv_id}/messages",
+                           json={"question": "当前技术热点"}, headers=auth_headers)
+    assert resp.status_code == 200
+    events = _parse_sse(resp.text)
+    assert events[-1][0] == "done"
+
+    citations_event = dict(events)["citations"]
+    assert len(citations_event["items"]) == 1
+    item = citations_event["items"][0]
+    assert item["n"] == 1
+    assert item["doc_name"] == "T1"
+    assert item["url"] == "https://a.com"
+    assert item["verified"] is True
+
+    messages = app_client.get(f"/api/v1/conversations/{conv_id}/messages",
+                              headers=auth_headers).json()
+    assert messages[1]["citations_json"][0]["url"] == "https://a.com"
+
+
 def test_ask_requires_question(app_client, auth_headers, conv_id):
     resp = app_client.post(f"/api/v1/conversations/{conv_id}/messages",
                            json={}, headers=auth_headers)

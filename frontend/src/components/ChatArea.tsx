@@ -151,7 +151,8 @@ function ChatArea({ kbId, convId, onNewConv, onConversationUpdated }: ChatAreaPr
                 : "border border-dashed border-muted-foreground/40 text-muted-foreground/60 hover:bg-accent hover:text-accent-foreground",
             )}
           >
-            [{c.n}] {c.doc_name} · 第{c.page}页
+            [{c.n}] {c.doc_name}
+            {!c.url ? ` · 第${c.page}页` : ""}
           </button>
         ))}
       </div>

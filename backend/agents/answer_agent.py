@@ -4,10 +4,10 @@ from typing import AsyncGenerator, Optional
 from backend.agents.citation_agent import build_citations
 from backend.core.llm_adapter import get_llm
 
-SYSTEM_PROMPT = """你基于以下检索片段回答问题。规则:
-1. 回答内容来自某片段时,在引用内容最后一个字后面、句号之前标注 [n](n 为片段编号);一句话引用多个片段时,在各自内容处分别标注
+SYSTEM_PROMPT = """你基于以下检索片段和网络搜索结果回答问题。规则:
+1. 回答内容来自某片段或网络结果时,在引用内容最后一个字后面、句号之前标注 [n](n 为该来源的编号);一句话引用多个来源时,在各自内容处分别标注
 2. 无依据的部分明确说明"知识库中未找到相关依据"
-3. 回答末尾输出"## 引用"列表: [n] 文档名, 第x页
+3. 回答末尾输出"## 引用"列表: 知识库来源为 [n] 文档名, 第x页; 网络来源为 [n] 标题 (网址)
 4. 不要编造片段中不存在的内容"""
 
 MAX_CHUNK_CHARS = 800
@@ -32,9 +32,11 @@ def build_prompt(question: str, history: list[dict], chunks: list[dict],
             text = (c.get("text") or "")[:MAX_CHUNK_CHARS]
             lines.append(f"[{i}] {text}\n    来源: {c.get('doc_name', '')} 第{c.get('page', '?')}页")
         parts.append("检索片段:\n" + "\n".join(lines))
+    # 网络结果延续片段编号, 保证 [n] 全局唯一, 与 build_citations 映射规则一致
+    base = len(chunks)
     for i, w in enumerate(web_results or [], 1):
         lines = [
-            f"[{i}] {w.get('title', '')}",
+            f"[{base + i}] {w.get('title', '')}",
             f"    {w.get('snippet', '')}",
             f"    来源: {w.get('url', '')}",
         ]
@@ -54,5 +56,5 @@ async def stream(question: str, history: list[dict], chunks: list[dict],
     async for token in llm.astream(prompt, system_prompt=SYSTEM_PROMPT):
         answer_parts.append(token)
         yield {"type": "chunk", "data": token}
-    citations = build_citations("".join(answer_parts), chunks)
+    citations = build_citations("".join(answer_parts), chunks, web_results or [])
     yield {"type": "citations", "data": citations}

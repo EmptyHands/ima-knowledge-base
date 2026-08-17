@@ -8,6 +8,11 @@ CHUNKS = [
      "page": 5, "doc_name": "bp.pdf", "score": 0.62},
 ]
 
+WEB_RESULTS = [
+    {"title": "Transformer 架构详解", "url": "https://example.com/transformer",
+     "snippet": "Transformer 使用自注意力机制计算上下文, 这是核心原理。"},
+]
+
 
 def test_real_citation_verified():
     answer = "Transformer 使用自注意力机制计算上下文[1]。\n\n## 引用\n[1] transformer.pdf, 第3页"
@@ -142,3 +147,39 @@ def test_doc_level_citation_still_carries_source_metadata():
     assert c["verified"] is False
     assert c["doc_name"] == "guide.pdf"
     assert c["page"] == 7
+
+
+def test_web_citation_maps_to_web_results():
+    """DEV-018: 无片段纯联网回答, [n] 应映射到网络结果并可点击跳转"""
+    answer = "根据网络资料, Transformer 使用自注意力机制计算上下文[1]。"
+    citations = citation_agent.build_citations(answer, [], WEB_RESULTS)
+    assert len(citations) == 1
+    c = citations[0]
+    assert c["n"] == 1
+    assert c["doc_name"] == "Transformer 架构详解"
+    assert c["url"] == "https://example.com/transformer"
+    assert c["verified"] is True
+
+
+def test_web_citation_numbering_continues_after_chunks():
+    """DEV-018: 片段与网络结果并存时, 网络结果编号延续片段之后"""
+    answer = "Transformer 使用自注意力机制计算上下文[1]。自注意力机制是核心[3]。"
+    citations = citation_agent.build_citations(answer, CHUNKS, WEB_RESULTS)
+    by_n = {c["n"]: c for c in citations}
+    assert by_n[1]["doc_name"] == "transformer.pdf"
+    assert "url" not in by_n[1]
+    assert by_n[3]["doc_name"] == "Transformer 架构详解"
+    assert by_n[3]["url"] == "https://example.com/transformer"
+
+
+def test_web_citation_out_of_range_skipped():
+    citations = citation_agent.build_citations("答案[2]", [], WEB_RESULTS)
+    assert citations == []
+
+
+def test_web_citation_not_affected_by_chunk_verification():
+    """DEV-018: 网络引用恒 verified(来源可直接跳转自证), 与片段包含率校验无关"""
+    answer = "完全改写的说法, 与摘要不一致[1]。"
+    citations = citation_agent.build_citations(answer, [], WEB_RESULTS)
+    assert len(citations) == 1
+    assert citations[0]["verified"] is True
