@@ -64,6 +64,8 @@ class Conversation(Base):
     kb_id = Column(String(36), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String(200), nullable=False, default="新对话")
+    summary = Column(Text, nullable=True)          # 对话摘要(窗口外历史压缩产物, DEV-015)
+    summary_until_id = Column(String(36), nullable=True)  # 已压缩到的最后一条消息 id
     created_at = Column(DateTime, default=_now)
     updated_at = Column(DateTime, default=_now, onupdate=_now)
 

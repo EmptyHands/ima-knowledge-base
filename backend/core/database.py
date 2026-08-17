@@ -20,6 +20,21 @@ def init_database():
     Base.metadata.create_all(bind=engine)
 
 
+def migrate_memory_columns(engine=None):
+    """轻量列迁移: 旧库 conversations 表补 summary / summary_until_id 列 (DEV-015)"""
+    from sqlalchemy import text
+    target = engine or globals().get("engine")
+    if target is None:
+        return
+    with target.connect() as conn:
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(conversations)"))}
+        if "summary" not in cols:
+            conn.execute(text("ALTER TABLE conversations ADD COLUMN summary TEXT"))
+        if "summary_until_id" not in cols:
+            conn.execute(text("ALTER TABLE conversations ADD COLUMN summary_until_id VARCHAR(36)"))
+        conn.commit()
+
+
 def get_db():
     if SessionLocal is None:
         init_database()

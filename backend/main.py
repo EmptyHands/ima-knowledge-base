@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.core.database import init_database  # noqa: E402
+from backend.core.database import init_database, migrate_memory_columns  # noqa: E402
 from backend.services.document_service import reconcile_missing_vectors  # noqa: E402
 from backend.api.routes import auth, chat, documents, knowledge_bases  # noqa: E402
 from backend.mcp.transport import router as mcp_router  # noqa: E402
@@ -25,6 +25,10 @@ async def lifespan(app: FastAPI):
     logger.info("Starting ima-knowledge-base...")
     init_database()
     logger.info("Database initialized")
+    try:
+        migrate_memory_columns()
+    except Exception as e:
+        logger.warning(f"记忆列迁移失败(不影响启动): {e}")
     try:
         await reconcile_missing_vectors()
     except Exception as e:
