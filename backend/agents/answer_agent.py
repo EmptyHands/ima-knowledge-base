@@ -3,6 +3,7 @@ from typing import AsyncGenerator, Optional
 
 from backend.agents.citation_agent import build_citations
 from backend.core.llm_adapter import get_llm
+from backend.models.messages import ChatMessage
 
 SYSTEM_PROMPT = """你基于以下检索片段和网络搜索结果回答问题。规则:
 1. 回答内容来自某片段或网络结果时,在引用内容最后一个字后面、句号之前标注 [n](n 为该来源的编号);一句话引用多个来源时,在各自内容处分别标注
@@ -15,15 +16,15 @@ MAX_HISTORY = 10
 MAX_HISTORY_CHARS = 500
 
 
-def build_prompt(question: str, history: list[dict], chunks: list[dict],
+def build_prompt(question: str, history: list[ChatMessage], chunks: list[dict],
                  web_results: Optional[list[dict]] = None) -> str:
     """构造提示词: 最近 10 条消息 + 检索片段(截断 800 字, 附编号)"""
     parts = []
     if history:
         lines = []
         for msg in history[-MAX_HISTORY:]:
-            role = "用户" if msg.get("role") == "user" else "助手"
-            content = (msg.get("content") or "")[:MAX_HISTORY_CHARS]
+            role = "用户" if msg.role == "user" else "助手"
+            content = (msg.content or "")[:MAX_HISTORY_CHARS]
             lines.append(f"{role}: {content}")
         parts.append("历史对话:\n" + "\n".join(lines))
     if chunks:
@@ -46,14 +47,14 @@ def build_prompt(question: str, history: list[dict], chunks: list[dict],
     return "\n\n".join(parts)
 
 
-async def stream(question: str, history: list[dict], chunks: list[dict],
+async def stream(question: str, history: list[ChatMessage], chunks: list[dict],
                  web_results: Optional[list[dict]] = None, llm=None) -> AsyncGenerator[dict, None]:
     """流式回答: 依次 yield {"type": "status"} → {"type": "chunk", "data": token} → {"type": "citations", "data": [...]}"""
     yield {"type": "status", "data": "检索完成, 正在生成回答"}
     llm = llm or get_llm()
-    prompt = build_prompt(question, history, chunks, web_results or [])
+    messages = [*history, ChatMessage(role="user", content=question)]
     answer_parts = []
-    async for token in llm.astream(prompt, system_prompt=SYSTEM_PROMPT):
+    async for token in llm.astream(messages, system_prompt=SYSTEM_PROMPT):
         answer_parts.append(token)
         yield {"type": "chunk", "data": token}
     citations = build_citations("".join(answer_parts), chunks, web_results or [])

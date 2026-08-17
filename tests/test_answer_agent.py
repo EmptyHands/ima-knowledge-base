@@ -2,6 +2,7 @@
 import pytest
 
 from backend.agents import answer_agent, citation_agent
+from backend.models.messages import ChatMessage
 
 
 class FakeLLM:
@@ -51,7 +52,8 @@ async def test_stream_citations_include_web_results(chunks):
 
 
 def test_build_prompt_keeps_last_10_history_messages(chunks):
-    history = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"消息{i}"} for i in range(15)]
+    history = [ChatMessage(role="user" if i % 2 == 0 else "assistant", content=f"消息{i}")
+               for i in range(15)]
     prompt = answer_agent.build_prompt("问题", history, chunks)
     assert "消息14" in prompt
     assert "消息0" not in prompt, "只保留最近 10 条历史"
