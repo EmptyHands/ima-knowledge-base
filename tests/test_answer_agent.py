@@ -6,7 +6,7 @@ from backend.models.messages import ChatMessage
 
 
 class FakeLLM:
-    async def astream(self, prompt, system_prompt=None):
+    async def astream(self, messages, system_prompt=None):
         for token in ["基于", "片段", "[1]", "的", "回答", "\n## 引用\n", "[1] transformer.pdf, 第3页"]:
             yield token
 

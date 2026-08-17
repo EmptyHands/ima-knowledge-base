@@ -180,11 +180,11 @@ def test_empty_llm_output_falls_back(app_client, auth_headers, kb_id, conv_id, m
     from backend.core import llm_adapter
 
     class EmptyLLM:
-        async def astream(self, prompt, system_prompt=None):
+        async def astream(self, messages, system_prompt=None):
             for _ in []:
                 yield ""
 
-        async def ainvoke(self, prompt, system_prompt=None, **kwargs):
+        async def ainvoke(self, messages, system_prompt=None, **kwargs):
             return ""
 
     monkeypatch.setattr(llm_adapter, "_llm_adapter", EmptyLLM())

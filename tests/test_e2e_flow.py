@@ -14,11 +14,11 @@ E2E_TOKENS = [PDF_TEXT, "[1]", "。\n## 引用\n", "[1] e2e_test.pdf, 第1页"]
 
 
 class E2EFakeLLM:
-    async def astream(self, prompt, system_prompt=None):
+    async def astream(self, messages, system_prompt=None):
         for token in E2E_TOKENS:
             yield token
 
-    async def ainvoke(self, prompt, system_prompt=None, **kwargs):
+    async def ainvoke(self, messages, system_prompt=None, **kwargs):
         return "".join(E2E_TOKENS)
 
 

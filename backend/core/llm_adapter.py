@@ -13,12 +13,21 @@ class LLMProvider(ABC):
     """LLM 抽象接口 - 生产实现为 LLMAdapter, 测试注入 FakeLLM"""
 
     @abstractmethod
-    async def ainvoke(self, prompt: str, system_prompt: str = None, **kwargs) -> str:
+    async def ainvoke(self, messages: list, system_prompt: str = None, **kwargs) -> str:
         ...
 
     @abstractmethod
-    async def astream(self, prompt: str, system_prompt: str = None, **kwargs) -> AsyncGenerator[str, None]:
+    async def astream(self, messages: list, system_prompt: str = None, **kwargs) -> AsyncGenerator[str, None]:
         ...
+
+
+def _build_api_messages(messages: list, system_prompt: str = None) -> list[dict]:
+    """ChatMessage 列表 → OpenAI 请求消息体; system_prompt 插为第一条"""
+    out = []
+    if system_prompt:
+        out.append({"role": "system", "content": system_prompt})
+    out.extend(m.to_api_dict() for m in messages)
+    return out
 
 
 class LLMAdapter(LLMProvider):
@@ -44,12 +53,8 @@ class LLMAdapter(LLMProvider):
         )
         logger.info(f"LLM adapter initialized: model={self.model_name}")
 
-    async def ainvoke(self, prompt: str, system_prompt: str = None, **kwargs) -> str:
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-        return await self._chat(messages, **kwargs)
+    async def ainvoke(self, messages, system_prompt=None, **kwargs) -> str:
+        return await self._chat(_build_api_messages(messages, system_prompt), **kwargs)
 
     async def _chat(self, messages: list, **kwargs) -> str:
         try:
@@ -70,17 +75,14 @@ class LLMAdapter(LLMProvider):
             logger.error(f"LLM call failed: {e}")
             raise
 
-    async def astream(self, prompt: str, system_prompt: str = None, **kwargs) -> AsyncGenerator[str, None]:
+    async def astream(self, messages, system_prompt=None, **kwargs) -> AsyncGenerator[str, None]:
         """token 级流式输出"""
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        api_messages = _build_api_messages(messages, system_prompt)
         try:
             stream = await asyncio.wait_for(
                 self.client.chat.completions.create(
                     model=self.model_name,
-                    messages=messages,
+                    messages=api_messages,
                     temperature=kwargs.get("temperature", self.temperature),
                     max_tokens=kwargs.get("max_tokens", self.max_tokens or 8000),
                     stream=True,
@@ -98,14 +100,14 @@ class LLMAdapter(LLMProvider):
             logger.error(f"LLM stream failed: {e}")
             raise
 
-    def invoke_sync(self, prompt: str, system_prompt: str = None, **kwargs) -> str:
+    def invoke_sync(self, messages, system_prompt=None, **kwargs) -> str:
         import asyncio as _asyncio
         try:
             loop = _asyncio.get_running_loop()
         except RuntimeError:
             loop = _asyncio.new_event_loop()
             _asyncio.set_event_loop(loop)
-        return loop.run_until_complete(self.ainvoke(prompt, system_prompt, **kwargs))
+        return loop.run_until_complete(self.ainvoke(messages, system_prompt, **kwargs))
 
 
 _llm_adapter: Optional[LLMAdapter] = None

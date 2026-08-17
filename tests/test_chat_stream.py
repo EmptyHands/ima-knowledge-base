@@ -87,10 +87,10 @@ def test_error_event_when_llm_fails(app_client, auth_headers, conv_id, fake_retr
     from backend.core.llm_adapter import LLMProvider
 
     class FailingLLM(LLMProvider):
-        async def astream(self, prompt, system_prompt=None):
+        async def astream(self, messages, system_prompt=None):
             raise RuntimeError("LLM 模拟故障")
 
-        async def ainvoke(self, prompt, system_prompt=None, **kwargs):
+        async def ainvoke(self, messages, system_prompt=None, **kwargs):
             raise RuntimeError("LLM 模拟故障")
 
     import backend.core.llm_adapter as llm_adapter_module
@@ -114,11 +114,11 @@ def test_web_citation_clickable_via_citations_event(app_client, auth_headers, co
     from backend.core.llm_adapter import LLMProvider
 
     class WebLLM(LLMProvider):
-        async def astream(self, prompt, system_prompt=None):
+        async def astream(self, messages, system_prompt=None):
             for token in ["根据", "网络", "搜索[1]", "的回答", "\n## 引用\n", "[1] T1 (https://a.com)"]:
                 yield token
 
-        async def ainvoke(self, prompt, system_prompt=None, **kwargs):
+        async def ainvoke(self, messages, system_prompt=None, **kwargs):
             return "".join(self._tokens)
 
     import backend.core.llm_adapter as llm_adapter_module

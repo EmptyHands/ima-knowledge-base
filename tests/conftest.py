@@ -53,13 +53,13 @@ class FakeLLM:
         self._tokens = tokens or ["基于", "片段", "[1]", "的回答", "\n## 引用\n", "[1] 测试文档.pdf, 第1页"]
         self._fail = fail
 
-    async def astream(self, prompt, system_prompt=None):
+    async def astream(self, messages, system_prompt=None):
         if self._fail:
             raise RuntimeError("LLM 模拟故障")
         for token in self._tokens:
             yield token
 
-    async def ainvoke(self, prompt, system_prompt=None, **kwargs):
+    async def ainvoke(self, messages, system_prompt=None, **kwargs):
         if self._fail:
             raise RuntimeError("LLM 模拟故障")
         return "".join(self._tokens)
