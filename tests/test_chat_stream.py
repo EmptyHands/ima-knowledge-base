@@ -156,3 +156,92 @@ def test_ask_requires_question(app_client, auth_headers, conv_id):
     resp = app_client.post(f"/api/v1/conversations/{conv_id}/messages",
                            json={}, headers=auth_headers)
     assert resp.status_code == 422
+
+
+class RecordingLLM:
+    """记录 ainvoke 调用与 astream 收到的消息 (DEV-015)"""
+
+    def __init__(self):
+        self.ainvoke_calls = []
+        self.stream_messages = None
+
+    async def ainvoke(self, messages, system_prompt=None, **kwargs):
+        self.ainvoke_calls.append((list(messages), system_prompt))
+        return "压缩后的对话摘要"
+
+    async def astream(self, messages, system_prompt=None):
+        self.stream_messages = list(messages)
+        for token in ["基于", "片段", "[1]", "的回答", "\n## 引用\n", "[1] transformer.pdf, 第3页"]:
+            yield token
+
+
+def _insert_messages(db, conv_id, n):
+    from backend.models.database import Message
+    for i in range(n):
+        db.add(Message(conversation_id=conv_id, role="user" if i % 2 == 0 else "assistant",
+                       content=f"历史消息{i}"))
+    db.commit()
+
+
+def test_long_conversation_compresses_and_injects_summary(app_client, auth_headers, conv_id,
+                                                          fake_retrieve, monkeypatch):
+    """DEV-015: 15 条历史(窗口外 5 条) → 压缩被调用, summary 落库, 回答请求首条为 system 摘要"""
+    from backend.core.database import get_db_session
+    from backend.models.database import Conversation
+    db = get_db_session()
+    _insert_messages(db, conv_id, 15)
+    db.close()
+
+    llm = RecordingLLM()
+    import backend.core.llm_adapter as llm_adapter_module
+    monkeypatch.setattr(llm_adapter_module, "_llm_adapter", llm)
+
+    resp = app_client.post(f"/api/v1/conversations/{conv_id}/messages",
+                           json={"question": "当前进展如何"}, headers=auth_headers)
+    assert resp.status_code == 200
+    assert dict(_parse_sse(resp.text))["done"]
+
+    assert len(llm.ainvoke_calls) == 1, "压缩必须调用一次 LLM"
+    assert "历史消息0" in llm.ainvoke_calls[0][0][0].content, "窗口外历史进入压缩输入"
+    assert llm.stream_messages[0].role == "system"
+    assert "压缩后的对话摘要" in llm.stream_messages[0].content
+
+    db = get_db_session()
+    conv = db.query(Conversation).get(conv_id)
+    assert conv.summary == "压缩后的对话摘要"
+    assert conv.summary_until_id
+    db.close()
+
+
+def test_short_conversation_skips_compression(app_client, auth_headers, conv_id,
+                                              fake_retrieve, monkeypatch):
+    """DEV-015: 短会话(≤10 条)零压缩调用"""
+    from backend.core.database import get_db_session
+    db = get_db_session()
+    _insert_messages(db, conv_id, 4)
+    db.close()
+    llm = RecordingLLM()
+    import backend.core.llm_adapter as llm_adapter_module
+    monkeypatch.setattr(llm_adapter_module, "_llm_adapter", llm)
+    resp = app_client.post(f"/api/v1/conversations/{conv_id}/messages",
+                           json={"question": "你好"}, headers=auth_headers)
+    assert resp.status_code == 200
+    assert llm.ainvoke_calls == [], "短会话不触发压缩"
+
+
+def test_empty_kb_fallback_skips_compression(app_client, auth_headers, monkeypatch):
+    """DEV-015: 空库兜底分支不触发压缩(零 LLM 成本)"""
+    resp = app_client.post("/api/v1/knowledge-bases", json={"name": "空库", "description": ""},
+                           headers=auth_headers)
+    kb_id = resp.json()["id"]
+    resp = app_client.post(f"/api/v1/conversations?kb_id={kb_id}",
+                           json={"kb_id": kb_id, "title": "新对话"}, headers=auth_headers)
+    conv_id = resp.json()["id"]
+    llm = RecordingLLM()
+    import backend.core.llm_adapter as llm_adapter_module
+    monkeypatch.setattr(llm_adapter_module, "_llm_adapter", llm)
+    resp = app_client.post(f"/api/v1/conversations/{conv_id}/messages",
+                           json={"question": "有什么"}, headers=auth_headers)
+    assert resp.status_code == 200
+    assert "chunk" in [e for e, _ in _parse_sse(resp.text)]
+    assert llm.ainvoke_calls == [], "fallback 不触发压缩"

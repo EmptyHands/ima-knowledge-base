@@ -1,4 +1,5 @@
 """会话与消息路由 - SSE 流式问答 (RetrieverAgent → AnswerAgent 管线)"""
+import asyncio
 import json
 import logging
 import re
@@ -11,8 +12,10 @@ from sqlalchemy.orm import Session
 from backend.agents import answer_agent, retriever_agent
 from backend.api.routes.auth import get_current_user
 from backend.core.database import get_db
+from backend.core.llm_adapter import get_llm
 from backend.models.database import Conversation, Document, KnowledgeBase, Message, User
 from backend.models.messages import ChatMessage
+from backend.services import memory
 
 logger = logging.getLogger(__name__)
 
@@ -122,8 +125,8 @@ async def ask(conv_id: str,
     question = req.question.strip()
 
     history_rows = db.query(Message).filter(Message.conversation_id == conv_id) \
-        .order_by(Message.created_at.desc()).limit(HISTORY_LIMIT).all()
-    history = [ChatMessage(role=m.role, content=m.content) for m in reversed(history_rows)]
+        .order_by(Message.created_at.asc()).all()
+    history = [ChatMessage(role=m.role, content=m.content) for m in history_rows[-HISTORY_LIMIT:]]
 
     doc_count = db.query(Document).filter(Document.kb_id == conv.kb_id).count()
     question, force_web = _confirm_question(history, question)
@@ -157,7 +160,11 @@ async def ask(conv_id: str,
                 return
 
             yield _sse("status", {"text": "正在检索知识库..."})
-            retrieval = await retriever_agent.retrieve(question, conv.kb_id, force_web=force_web)
+            # 检索与摘要压缩无依赖, 并行执行取 max 延迟; 摘要本轮即可注入 (DEV-015)
+            retrieval, summary = await asyncio.gather(
+                retriever_agent.retrieve(question, conv.kb_id, force_web=force_web),
+                memory.update_summary(db, conv, history_rows, get_llm(), HISTORY_LIMIT),
+            )
             chunks, web_results = retrieval["chunks"], retrieval["web_results"]
             if not chunks and not web_results:
                 if force_web:
@@ -171,7 +178,8 @@ async def ask(conv_id: str,
 
             answer_parts = []
             citations = []
-            async for event in answer_agent.stream(question, history, chunks, web_results):
+            async for event in answer_agent.stream(question, history, chunks, web_results,
+                                                   summary=summary):
                 if event["type"] == "chunk":
                     answer_parts.append(event["data"])
                     yield _sse("chunk", {"text": event["data"]})
