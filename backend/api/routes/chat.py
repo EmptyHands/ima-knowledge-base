@@ -1,32 +1,25 @@
-"""会话与消息路由 - SSE 流式问答 (RetrieverAgent → AnswerAgent 管线)"""
-import asyncio
+"""会话与消息路由 - SSE 流式问答 (langgraph 管线: 检索/判定/人机交互/回答)"""
 import json
 import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend.agents import answer_agent, retriever_agent
+import backend.graph.qa_graph as qa_graph
 from backend.api.routes.auth import get_current_user
 from backend.core.database import get_db
-from backend.core.llm_adapter import get_llm
+from backend.graph.qa_graph import HISTORY_LIMIT, checkpointer, graph
 from backend.models.database import Conversation, Document, KnowledgeBase, Message, User
 from backend.models.messages import ChatMessage
-from backend.services import memory
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/conversations", tags=["会话"])
 
-HISTORY_LIMIT = 10
-
-EMPTY_KB_FALLBACK = "当前知识库还没有任何文档。知识库中未找到与『{question}』相关的内容。是否需要联网搜索?回复『需要』即可。"
-NO_RESULT_FALLBACK = "知识库中未找到与『{question}』相关的内容。是否需要联网搜索?回复『需要』即可。"
-NO_ANSWER_FALLBACK = "未能基于检索内容生成回答。知识库中未找到与『{question}』相关的内容。是否需要联网搜索?回复『需要』即可。"
-WEB_UNAVAILABLE = "联网搜索当前不可用(未配置 TAVILY_API_KEY), 请换个问法或上传相关文档后重试。"
 CONFIRM_WORDS = ("需要", "要", "好", "是", "可以", "联网", "搜索", "用")
 _RE_FALLBACK_QUESTION = re.compile(r"未找到与『(.+?)』相关的内容")
 
@@ -119,7 +112,11 @@ async def ask(conv_id: str,
               req: AskRequest,
               db: Session = Depends(get_db),
               user: User = Depends(get_current_user)):
-    """SSE 流式问答: status → chunk* → citations → done / error (PRD §6.2)"""
+    """SSE 流式问答: status → chunk* → citations → done / error (PRD §6.2)
+
+    编排委托 langgraph 图(qa_graph): 无可靠结果 → ask_user interrupt 挂起 →
+    用户确认后 Command(resume=True) 回到检索节点强制联网重跑。
+    """
     conv = _get_owned_conv(db, conv_id, user)
     _check_kb_owned(db, conv.kb_id, user)
     question = req.question.strip()
@@ -129,84 +126,100 @@ async def ask(conv_id: str,
     history = [ChatMessage(role=m.role, content=m.content) for m in history_rows[-HISTORY_LIMIT:]]
 
     doc_count = db.query(Document).filter(Document.kb_id == conv.kb_id).count()
-    question, force_web = _confirm_question(history, question)
+    question, is_confirm = _confirm_question(history, question)
 
     user_msg = Message(conversation_id=conv_id, role="user", content=req.question.strip())
     db.add(user_msg)
     db.commit()
 
-    async def _finish_fallback(text: str):
-        """反问/不可用回复: 固定文本以 chunk 流式下发 + 入库 + citations + done, 不调用大模型
+    def _initial_state(allow_web: bool = False) -> dict:
+        return {"question": question, "kb_id": conv.kb_id, "conv_id": conv.id,
+                "kb_empty": doc_count == 0,
+                "history": [{"role": m.role, "content": m.content} for m in history],
+                "allow_web_search": allow_web}
 
-        chunk 事件必不可少: 前端仅累积 chunk 内容, 无 chunk 则答案不会渲染, 需刷新才能看到
-        """
+    def _persist_assistant(content: str, citations=None) -> Message:
         assistant_msg = Message(conversation_id=conv_id, role="assistant",
-                                content=text, citations_json=None)
+                                content=content, citations_json=citations or None)
         db.add(assistant_msg)
         if conv.title == "新对话":
             conv.title = question[:20]
         db.commit()
-        yield _sse("chunk", {"text": text})
-        yield _sse("citations", {"items": []})
-        yield _sse("done", {"message_id": assistant_msg.id})
+        return assistant_msg
+
+    async def _drive_graph(graph_input, config: dict):
+        """驱动图并映射 SSE 事件; 流结束后按 中断反问/终止文案/正常回答 三分支收尾"""
+        interrupted = False
+        saw_status = False
+        citations = []
+        answer_parts = []
+        async for mode, payload in graph.astream(graph_input, config,
+                                                 stream_mode=["updates", "custom"]):
+            if mode == "custom":
+                if payload["type"] == "status":
+                    saw_status = True
+                    yield _sse("status", {"text": payload["data"]})
+                elif payload["type"] == "chunk":
+                    answer_parts.append(payload["data"])
+                    yield _sse("chunk", {"text": payload["data"]})
+                elif payload["type"] == "citations":
+                    citations = payload["data"]
+            elif isinstance(payload, dict) and "__interrupt__" in payload:
+                interrupted = True
+                interrupt_text = payload["__interrupt__"][0].value["text"]
+        if interrupted:
+            # 反问: status 已由 ask_user 的 custom 流下发, 文案以 chunk 下发
+            # (前端仅累积 chunk, 无 chunk 不渲染) + 入库 + 空引用 + done
+            msg = _persist_assistant(interrupt_text)
+            yield _sse("chunk", {"text": interrupt_text})
+            yield _sse("citations", {"items": []})
+            yield _sse("done", {"message_id": msg.id})
+        elif not answer_parts:
+            # 终止分支(已联网仍无可靠结果 / 已联网仍空回答): 图内无 chunk,
+            # 文案从 final state 的 fallback_text 取; 仅当本次 run 无任何
+            # custom status 时才自补 status(resume 会重跑 ask_user 再发一次)
+            state = await graph.aget_state(config)
+            text = state.values.get("fallback_text")
+            if text == qa_graph.WEB_UNAVAILABLE:
+                status_text = "知识库中未检索到相关内容"
+            elif text == qa_graph.NO_ANSWER_TERMINAL:
+                status_text = "未能生成有效回答"
+            else:
+                raise RuntimeError(f"图终止但无有效 fallback_text: {text!r}")
+            if not saw_status:
+                yield _sse("status", {"text": status_text})
+            msg = _persist_assistant(text)
+            yield _sse("chunk", {"text": text})
+            yield _sse("citations", {"items": []})
+            yield _sse("done", {"message_id": msg.id})
+        else:
+            answer = "".join(answer_parts).strip()
+            msg = _persist_assistant(answer, citations)
+            yield _sse("citations", {"items": citations})
+            yield _sse("done", {"message_id": msg.id})
+
+    async def _discard_thread(config: dict):
+        try:
+            await checkpointer.adelete_thread(config["configurable"]["thread_id"])
+        except Exception:
+            pass
 
     async def gen():
         try:
-            if doc_count == 0 and not force_web:
-                text = EMPTY_KB_FALLBACK.format(question=question)
-                yield _sse("status", {"text": "知识库为空, 未进行检索"})
-                async for ev in _finish_fallback(text):
-                    yield ev
-                return
-
-            yield _sse("status", {"text": "正在检索知识库..."})
-            # 检索与摘要压缩无依赖, 并行执行取 max 延迟; 摘要本轮即可注入 (DEV-015)
-            retrieval, summary = await asyncio.gather(
-                retriever_agent.retrieve(question, conv.kb_id, force_web=force_web),
-                memory.update_summary(db, conv, history_rows, get_llm(), HISTORY_LIMIT),
-            )
-            chunks, web_results = retrieval["chunks"], retrieval["web_results"]
-            if not chunks and not web_results:
-                if force_web:
-                    text = WEB_UNAVAILABLE
+            config = {"configurable": {"thread_id": conv_id}}
+            try:
+                if is_confirm:
+                    async for ev in _drive_graph(Command(resume=True), config):
+                        yield ev
                 else:
-                    text = NO_RESULT_FALLBACK.format(question=question)
-                yield _sse("status", {"text": "知识库中未检索到相关内容"})
-                async for ev in _finish_fallback(text):
+                    await _discard_thread(config)
+                    async for ev in _drive_graph(_initial_state(), config):
+                        yield ev
+            except (KeyError, ValueError):
+                # 线程丢失(进程重启/无中断可恢复): 降级为带联网的新 run
+                await _discard_thread(config)
+                async for ev in _drive_graph(_initial_state(allow_web=True), config):
                     yield ev
-                return
-
-            answer_parts = []
-            citations = []
-            async for event in answer_agent.stream(question, history, chunks, web_results,
-                                                   summary=summary):
-                if event["type"] == "chunk":
-                    answer_parts.append(event["data"])
-                    yield _sse("chunk", {"text": event["data"]})
-                elif event["type"] == "citations":
-                    citations = event["data"]
-                else:
-                    yield _sse("status", {"text": event["data"]})
-
-            answer = "".join(answer_parts).strip()
-            if not answer:
-                # LLM 未输出任何内容(如无法依据检索片段回答时流式返回空): 不落空消息,
-                # 与无结果分支一致回退为反问, 避免刷新后出现空白气泡
-                yield _sse("status", {"text": "未能生成有效回答"})
-                async for ev in _finish_fallback(NO_ANSWER_FALLBACK.format(question=question)):
-                    yield ev
-                return
-
-            assistant_msg = Message(conversation_id=conv_id, role="assistant",
-                                    content=answer,
-                                    citations_json=citations or None)
-            db.add(assistant_msg)
-            if conv.title == "新对话":
-                conv.title = question[:20]
-            db.commit()
-
-            yield _sse("citations", {"items": citations})
-            yield _sse("done", {"message_id": assistant_msg.id})
         except Exception as e:
             logger.exception("问答管线失败")
             yield _sse("error", {"text": f"生成失败: {str(e)[:200]}"})

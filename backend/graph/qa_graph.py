@@ -191,4 +191,5 @@ def build_graph(checkpointer=None):
     return g.compile(checkpointer=checkpointer or MemorySaver())
 
 
-graph = build_graph()
+checkpointer = MemorySaver()
+graph = build_graph(checkpointer=checkpointer)
