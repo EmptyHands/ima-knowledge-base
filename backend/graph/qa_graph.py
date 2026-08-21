@@ -7,8 +7,11 @@ MemorySaver 以 thread_id=会话ID 跨 HTTP 请求保存状态(DEV-019 将换 re
 import asyncio
 from typing import Optional, TypedDict
 
+from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
 from backend.agents import retriever_agent
 from backend.core.database import get_db_session
@@ -29,6 +32,12 @@ ASK_STATUS = {
     "empty_kb": "知识库为空, 未进行检索",
     "no_result": "知识库中未检索到相关内容",
     "no_answer": "未能生成有效回答",
+}
+
+ASK_TEXT = {
+    "empty_kb": EMPTY_KB_FALLBACK,
+    "no_result": NO_RESULT_FALLBACK,
+    "no_answer": NO_ANSWER_FALLBACK,
 }
 
 
@@ -101,8 +110,24 @@ def _route_after_retrieve(state: QaState) -> str:
     return "ask_user"
 
 
-async def _ask_user(state: QaState) -> dict:
-    raise NotImplementedError("ask_user 节点 Task 3 实现")
+async def _ask_user(state: QaState, config=None) -> dict:
+    """人机交互: 下发反问状态与文案后 interrupt 挂起; resume 后开联网开关
+
+    注: langgraph 1.2.11 在 Python 3.10 下异步节点不注入 config 上下文
+    (CONTEXT_NOT_SUPPORTED = sys.version_info < (3, 11)),
+    get_config() 拿不到 var_child_runnable_config 会使 interrupt/get_stream_writer
+    报 "Called get_config outside of a runnable context", 故手动注入节点 config。
+    """
+    token = var_child_runnable_config.set(config) if config else None
+    try:
+        reason = state.get("ask_reason") or ("empty_kb" if state["kb_empty"] else "no_result")
+        text = ASK_TEXT[reason].format(question=state["question"])
+        get_stream_writer()({"type": "status", "data": ASK_STATUS[reason]})
+        interrupt({"text": text})
+        return {"allow_web_search": True, "fallback_text": text}
+    finally:
+        if token is not None:
+            var_child_runnable_config.reset(token)
 
 
 async def _answer(state: QaState) -> dict:
@@ -113,11 +138,12 @@ def build_graph(checkpointer=None):
     g = StateGraph(QaState)
     g.add_node("retrieve", _retrieve)
     g.add_node("decide", _decide)
-    g.add_node("ask_user", _ask_user)   # Task 3 实现; 本任务先放占位(raise NotImplementedError)
+    g.add_node("ask_user", _ask_user)
     g.add_node("answer", _answer)       # Task 4 实现; 本任务先放占位
     g.add_conditional_edges(START, _route_after_retrieve,
                             {"retrieve": "retrieve", "ask_user": "ask_user", END: END})
     g.add_edge("retrieve", "decide")
+    g.add_edge("ask_user", "retrieve")  # resume 后回到检索全量重跑(人机交互闭环)
     g.add_conditional_edges("decide", _route_after_retrieve,
                             {"answer": "answer", "ask_user": "ask_user", END: END})
     return g.compile(checkpointer=checkpointer or MemorySaver())

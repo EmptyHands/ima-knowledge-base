@@ -81,10 +81,57 @@ async def test_decide_reliable_routes_to_answer(fake_retrieve, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_decide_empty_routes_to_ask_user(fake_retrieve):
-    """检索为空且未联网 → 触发 interrupt(ask_user), 无回答"""
+    """检索为空且未联网 → 触发 interrupt(ask_user), 无回答
+
+    注: langgraph 1.2.11 的 ainvoke 不抛 GraphInterrupt, 而是把中断以
+    __interrupt__ 项放进返回的 state 中(流项下发语义), 故断言返回含中断。
+    """
     from backend.graph.qa_graph import build_graph
     from langgraph.checkpoint.memory import MemorySaver
 
     g = build_graph(MemorySaver())
-    with pytest.raises(Exception):
-        await g.ainvoke(_input(), {"configurable": {"thread_id": "t-decide2"}})
+    final = await g.ainvoke(_input(), {"configurable": {"thread_id": "t-decide2"}})
+    assert "__interrupt__" in final, "检索为空应触发 interrupt(ask_user)"
+    assert final["__interrupt__"][0].value["text"].startswith("知识库中未找到")
+    assert final["ask_reason"] == "no_result"
+
+
+@pytest.mark.asyncio
+async def test_ask_user_interrupts_with_text(fake_retrieve):
+    """无结果反问: 中断值携带兜底文案(含原问题)"""
+    from backend.graph.qa_graph import build_graph
+    from langgraph.checkpoint.memory import MemorySaver
+
+    g = build_graph(MemorySaver())
+    config = {"configurable": {"thread_id": "t-ask1"}}
+    events = []
+    try:
+        async for item in g.astream(_input(), config, stream_mode=["updates", "custom"]):
+            events.append(item)
+    except Exception:
+        pass
+    interrupts = [payload for mode, payload in events if mode == "updates"
+                  and isinstance(payload, dict) and "__interrupt__" in payload]
+    assert interrupts, "应触发 interrupt"
+    value = interrupts[0]["__interrupt__"][0].value
+    assert "未找到与『怎么种苹果』相关的内容" in value["text"]
+    assert "是否需要联网搜索" in value["text"]
+
+
+@pytest.mark.asyncio
+async def test_resume_sets_allow_web_and_reruns_retrieve(fake_retrieve):
+    """用户确认后 resume: allow_web_search=True, 边回到 retrieve 全量重跑(force_web=True)"""
+    from backend.graph.qa_graph import build_graph
+    from langgraph.checkpoint.memory import MemorySaver
+
+    g = build_graph(MemorySaver())
+    config = {"configurable": {"thread_id": "t-ask2"}}
+    try:
+        async for _ in g.astream(_input(), config, stream_mode=["updates", "custom"]):
+            pass
+    except Exception:
+        pass
+    from langgraph.types import Command
+    final = await g.ainvoke(Command(resume=True), config)
+    assert final["allow_web_search"] is True
+    assert fake_retrieve.calls[-1] == ("怎么种苹果", "kb1", True), "resume 后应以 force_web=True 重跑"
