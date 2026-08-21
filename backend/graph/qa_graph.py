@@ -130,8 +130,49 @@ async def _ask_user(state: QaState, config=None) -> dict:
             var_child_runnable_config.reset(token)
 
 
-async def _answer(state: QaState) -> dict:
-    raise NotImplementedError("answer 节点 Task 4 实现")
+async def _answer(state: QaState, config=None) -> dict:
+    """LLM 流式回答 + 引用校验; token 经 custom 流实时外发
+
+    注: langgraph 1.2.11 在 Python 3.10 下异步节点不注入 config 上下文
+    (CONTEXT_NOT_SUPPORTED), get_stream_writer() 需手动注入节点 config,
+    模式与 _ask_user 相同。
+    """
+    from backend.agents import answer_agent
+    from backend.models.messages import ChatMessage
+
+    token = var_child_runnable_config.set(config) if config else None
+    try:
+        writer = get_stream_writer()
+        history = [ChatMessage(role=h["role"], content=h["content"]) for h in state["history"]]
+        answer_parts, citations = [], []
+        async for event in answer_agent.stream(state["question"], history, state["chunks"],
+                                               state["web_results"], summary=state.get("summary")):
+            writer(event)
+            if event["type"] == "chunk":
+                answer_parts.append(event["data"])
+            elif event["type"] == "citations":
+                citations = event["data"]
+        answer = "".join(answer_parts).strip()
+        if answer:
+            return {"answer": answer, "citations": citations}
+        if state["allow_web_search"]:
+            # 显式写 ask_reason=None: langgraph 1.2.11 的 TypedDict 通道只物化
+            # 被写入过的键, 不写则 final["ask_reason"] 报 KeyError
+            return {"answer": "", "citations": citations, "fallback_text": NO_ANSWER_TERMINAL,
+                    "ask_reason": None}
+        return {"answer": "", "citations": citations, "ask_reason": "no_answer"}
+    finally:
+        if token is not None:
+            var_child_runnable_config.reset(token)
+
+
+def _route_after_answer(state: QaState) -> str:
+    # 用 .get(): 1.2.11 下未写入过的键不存在于通道值中, 直接下标会 KeyError
+    if state["answer"]:
+        return END
+    if state.get("fallback_text"):
+        return END
+    return "ask_user"
 
 
 def build_graph(checkpointer=None):
@@ -139,13 +180,14 @@ def build_graph(checkpointer=None):
     g.add_node("retrieve", _retrieve)
     g.add_node("decide", _decide)
     g.add_node("ask_user", _ask_user)
-    g.add_node("answer", _answer)       # Task 4 实现; 本任务先放占位
+    g.add_node("answer", _answer)
     g.add_conditional_edges(START, _route_after_retrieve,
                             {"retrieve": "retrieve", "ask_user": "ask_user", END: END})
     g.add_edge("retrieve", "decide")
     g.add_edge("ask_user", "retrieve")  # resume 后回到检索全量重跑(人机交互闭环)
     g.add_conditional_edges("decide", _route_after_retrieve,
                             {"answer": "answer", "ask_user": "ask_user", END: END})
+    g.add_conditional_edges("answer", _route_after_answer, {"ask_user": "ask_user", END: END})
     return g.compile(checkpointer=checkpointer or MemorySaver())
 
 

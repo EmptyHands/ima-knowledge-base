@@ -135,3 +135,105 @@ async def test_resume_sets_allow_web_and_reruns_retrieve(fake_retrieve):
     final = await g.ainvoke(Command(resume=True), config)
     assert final["allow_web_search"] is True
     assert fake_retrieve.calls[-1] == ("怎么种苹果", "kb1", True), "resume 后应以 force_web=True 重跑"
+
+
+@pytest.mark.asyncio
+async def test_answer_node_streams_chunks_and_citations(fake_retrieve, monkeypatch):
+    """answer 节点: chunk 走 custom 流, 回答与引用落 state"""
+    from backend.agents import answer_agent, retriever_agent
+
+    async def _fake_stream(question, history, chunks, web_results, llm=None, summary=None):
+        yield {"type": "status", "data": "检索完成, 正在生成回答"}
+        for token in ["基于", "片段", "[1]", "的回答"]:
+            yield {"type": "chunk", "data": token}
+        yield {"type": "citations", "data": [{"n": 1, "doc_name": "a.pdf"}]}
+
+    monkeypatch.setattr(answer_agent, "stream", _fake_stream)
+
+    async def _ret(question, kb_id, top_k=5, force_web=False):
+        return {"chunks": [{"text": "x", "doc_id": "d", "page": 1, "doc_name": "a.pdf"}],
+                "web_results": []}
+
+    monkeypatch.setattr(retriever_agent, "retrieve", _ret)
+
+    from backend.graph.qa_graph import build_graph
+    from langgraph.checkpoint.memory import MemorySaver
+
+    g = build_graph(MemorySaver())
+    config = {"configurable": {"thread_id": "t-ans1"}}
+    custom = []
+    async for mode, payload in g.astream(_input(), config, stream_mode=["updates", "custom"]):
+        if mode == "custom":
+            custom.append(payload)
+    kinds = [c["type"] for c in custom]
+    assert "chunk" in kinds and "citations" in kinds
+    chunks_text = "".join(c["data"] for c in custom if c["type"] == "chunk")
+    assert chunks_text == "基于片段[1]的回答"
+    state = await g.aget_state(config)
+    assert state.values["answer"] == "基于片段[1]的回答"
+    assert state.values["citations"][0]["doc_name"] == "a.pdf"
+
+
+@pytest.mark.asyncio
+async def test_empty_answer_routes_to_ask(fake_retrieve, monkeypatch):
+    """LLM 空输出且未联网 → 再问(no_answer 文案)"""
+    from backend.agents import answer_agent, retriever_agent
+
+    async def _empty_stream(question, history, chunks, web_results, llm=None, summary=None):
+        yield {"type": "status", "data": "检索完成, 正在生成回答"}
+        yield {"type": "citations", "data": []}
+
+    monkeypatch.setattr(answer_agent, "stream", _empty_stream)
+
+    async def _ret(question, kb_id, top_k=5, force_web=False):
+        return {"chunks": [{"text": "x", "doc_id": "d", "page": 1, "doc_name": "a.pdf"}],
+                "web_results": []}
+
+    monkeypatch.setattr(retriever_agent, "retrieve", _ret)
+
+    from backend.graph.qa_graph import build_graph
+    from langgraph.checkpoint.memory import MemorySaver
+
+    g = build_graph(MemorySaver())
+    config = {"configurable": {"thread_id": "t-ans2"}}
+    try:
+        async for _ in g.astream(_input(), config, stream_mode=["updates", "custom"]):
+            pass
+    except Exception:
+        pass
+    state = await g.aget_state(config)
+    assert state.values["ask_reason"] == "no_answer"
+    from langgraph.types import Command
+    try:
+        async for _ in g.astream(Command(resume=True), config, stream_mode=["updates", "custom"]):
+            pass
+    except Exception:
+        pass
+    state2 = await g.aget_state(config)
+    assert state2.values["allow_web_search"] is True
+
+
+@pytest.mark.asyncio
+async def test_empty_answer_web_allowed_terminates(fake_retrieve, monkeypatch):
+    """已联网仍空输出 → 终止文案(不含反问, 防死循环)"""
+    from backend.agents import answer_agent, retriever_agent
+
+    async def _empty_stream(question, history, chunks, web_results, llm=None, summary=None):
+        yield {"type": "status", "data": "检索完成, 正在生成回答"}
+        yield {"type": "citations", "data": []}
+
+    monkeypatch.setattr(answer_agent, "stream", _empty_stream)
+
+    async def _ret(question, kb_id, top_k=5, force_web=False):
+        return {"chunks": [], "web_results": [{"title": "w", "url": "u", "snippet": "s"}]}
+
+    monkeypatch.setattr(retriever_agent, "retrieve", _ret)
+
+    from backend.graph.qa_graph import build_graph
+    from langgraph.checkpoint.memory import MemorySaver
+
+    g = build_graph(MemorySaver())
+    final = await g.ainvoke(_input(allow_web_search=True),
+                            {"configurable": {"thread_id": "t-ans3"}})
+    assert final["fallback_text"] == "未能基于检索内容生成回答。请换个问法或上传相关文档后重试。"
+    assert final["ask_reason"] is None
