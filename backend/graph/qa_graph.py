@@ -74,11 +74,52 @@ async def _retrieve(state: QaState) -> dict:
             "summary": summary, "allow_web_search": allow_web}
 
 
+def _reliable(chunks: list, web_results: list) -> bool:
+    return bool(chunks) or bool(web_results)
+
+
+async def _decide(state: QaState) -> dict:
+    """可靠性判定: 可靠走 answer; 已联网仍不可靠 → 终止文案(防死循环)"""
+    if _reliable(state["chunks"], state["web_results"]):
+        return {}
+    if state["allow_web_search"]:
+        return {"fallback_text": WEB_UNAVAILABLE}
+    reason = "empty_kb" if state["kb_empty"] else "no_result"
+    return {"ask_reason": reason}
+
+
+def _route_after_retrieve(state: QaState) -> str:
+    # 空库且未确认联网: 直接反问, 零检索零 LLM(与现状一致)
+    if state["kb_empty"] and not state["allow_web_search"]:
+        return "ask_user"
+    if "chunks" not in state:
+        return "retrieve"  # START: 尚未检索, 先跑 retrieve 节点
+    if _reliable(state["chunks"], state["web_results"]):
+        return "answer"
+    if state["allow_web_search"]:
+        return END  # 已联网仍无结果: 终止(防死循环)
+    return "ask_user"
+
+
+async def _ask_user(state: QaState) -> dict:
+    raise NotImplementedError("ask_user 节点 Task 3 实现")
+
+
+async def _answer(state: QaState) -> dict:
+    raise NotImplementedError("answer 节点 Task 4 实现")
+
+
 def build_graph(checkpointer=None):
     g = StateGraph(QaState)
     g.add_node("retrieve", _retrieve)
-    g.add_edge(START, "retrieve")
-    g.add_edge("retrieve", END)
+    g.add_node("decide", _decide)
+    g.add_node("ask_user", _ask_user)   # Task 3 实现; 本任务先放占位(raise NotImplementedError)
+    g.add_node("answer", _answer)       # Task 4 实现; 本任务先放占位
+    g.add_conditional_edges(START, _route_after_retrieve,
+                            {"retrieve": "retrieve", "ask_user": "ask_user", END: END})
+    g.add_edge("retrieve", "decide")
+    g.add_conditional_edges("decide", _route_after_retrieve,
+                            {"answer": "answer", "ask_user": "ask_user", END: END})
     return g.compile(checkpointer=checkpointer or MemorySaver())
 
 
