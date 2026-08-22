@@ -75,6 +75,9 @@ class AppConfig:
     retrieval_dense_threshold: float = 0.35
     chunk_size: int = 800
     chunk_overlap: int = 100
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_db: int = 0
 
     def __post_init__(self):
         self.llm.provider = LLMProvider(os.getenv("LLM_PROVIDER", "openai"))
@@ -107,6 +110,9 @@ class AppConfig:
         self.retrieval_dense_threshold = float(os.getenv("RETRIEVAL_DENSE_THRESHOLD", "0.35"))
         self.chunk_size = int(os.getenv("CHUNK_SIZE", "800"))
         self.chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "100"))
+        self.redis_host = os.getenv("REDIS_HOST", "localhost")
+        self.redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        self.redis_db = int(os.getenv("REDIS_DB", "0"))
 
 
 _config: Optional[AppConfig] = None
