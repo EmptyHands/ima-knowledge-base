@@ -78,6 +78,8 @@ class AppConfig:
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
+    detail_log_enabled: bool = False
+    detail_log_path: str = "./data/logs/detail.log"
 
     def __post_init__(self):
         self.llm.provider = LLMProvider(os.getenv("LLM_PROVIDER", "openai"))
@@ -113,6 +115,8 @@ class AppConfig:
         self.redis_host = os.getenv("REDIS_HOST", "localhost")
         self.redis_port = int(os.getenv("REDIS_PORT", "6379"))
         self.redis_db = int(os.getenv("REDIS_DB", "0"))
+        self.detail_log_enabled = os.getenv("DETAIL_LOG_ENABLED", "false").lower() == "true"
+        self.detail_log_path = os.getenv("DETAIL_LOG_PATH", "./data/logs/detail.log")
 
 
 _config: Optional[AppConfig] = None
