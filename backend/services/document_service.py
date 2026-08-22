@@ -85,7 +85,7 @@ async def process_document(document_id: str):
 async def reconcile_missing_vectors() -> dict:
     """向量对账: 对 status='ready' 但 Qdrant 无向量的文档重建索引
 
-    自愈场景: collection 被删除重建(如 v1.0.2 双向量迁移)后存量文档的向量全部
+    自愈场景: collection 被删除重建(如 v1.0.1 双向量迁移)后存量文档的向量全部
     丢失, 但 DB 状态仍是 ready, 检索恒为空。启动时调用, 单个文档失败不影响其他。
     返回 {"total", "skipped", "reindexed", "failed"}
     """
