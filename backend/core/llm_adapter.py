@@ -1,10 +1,13 @@
 """LLM 适配器 - 支持 OpenAI 兼容接口"""
 import logging
 import asyncio
+import inspect
+import time
 from abc import ABC, abstractmethod
 from typing import Optional, AsyncGenerator
 from openai import AsyncOpenAI
 from .config import get_config
+from backend.utils import detail_trace
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +29,18 @@ def _build_api_messages(messages: list, system_prompt: str = None) -> list[dict]
     out = []
     if system_prompt:
         out.append({"role": "system", "content": system_prompt})
-    out.extend(m.to_api_dict() for m in messages)
+    for m in messages:
+        if isinstance(m, dict):
+            out.append(m)
+        else:
+            out.append(m.to_api_dict())
     return out
+
+
+def _summarize_messages(messages: list[dict]) -> str:
+    """请求消息摘要(role + 内容截断), 供详细日志"""
+    return "; ".join(f"{m.get('role')}: {detail_trace.trunc(m.get('content', ''), 200)}"
+                     for m in messages)
 
 
 class LLMAdapter(LLMProvider):
@@ -57,6 +70,7 @@ class LLMAdapter(LLMProvider):
         return await self._chat(_build_api_messages(messages, system_prompt), **kwargs)
 
     async def _chat(self, messages: list, **kwargs) -> str:
+        t0 = time.perf_counter()
         try:
             response = await asyncio.wait_for(
                 self.client.chat.completions.create(
@@ -67,38 +81,48 @@ class LLMAdapter(LLMProvider):
                 ),
                 timeout=self.timeout,
             )
-            return response.choices[0].message.content or ""
-        except asyncio.TimeoutError:
-            logger.error("LLM call timeout")
-            raise
+            content = response.choices[0].message.content or ""
+            message = response.choices[0].message
+            reasoning = getattr(message, "reasoning_content", None) or ""
+            detail_trace.capture_llm("invoke", _summarize_messages(messages),
+                                     reasoning, time.perf_counter() - t0)
+            return content
         except Exception as e:
             logger.error(f"LLM call failed: {e}")
+            detail_trace.capture_llm("invoke", _summarize_messages(messages),
+                                     "", time.perf_counter() - t0)
             raise
 
     async def astream(self, messages, system_prompt=None, **kwargs) -> AsyncGenerator[str, None]:
         """token 级流式输出"""
         api_messages = _build_api_messages(messages, system_prompt)
+        reasoning_parts = []
+        t0 = time.perf_counter()
         try:
-            stream = await asyncio.wait_for(
-                self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=api_messages,
-                    temperature=kwargs.get("temperature", self.temperature),
-                    max_tokens=kwargs.get("max_tokens", self.max_tokens or 8000),
-                    stream=True,
-                ),
-                timeout=self.timeout,
+            created = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=api_messages,
+                temperature=kwargs.get("temperature", self.temperature),
+                max_tokens=kwargs.get("max_tokens", self.max_tokens or 8000),
+                stream=True,
             )
+            if inspect.isawaitable(created):
+                stream = await asyncio.wait_for(created, timeout=self.timeout)
+            else:
+                stream = created  # 兼容直接返回异步迭代器的实现(如测试替身)
             async for chunk in stream:
                 delta = chunk.choices[0].delta
+                if detail_trace.trace_enabled() and getattr(delta, "reasoning_content", None):
+                    reasoning_parts.append(delta.reasoning_content)
                 if delta.content:
                     yield delta.content
-        except asyncio.TimeoutError:
-            logger.error("LLM stream timeout")
-            raise
         except Exception as e:
             logger.error(f"LLM stream failed: {e}")
+            detail_trace.capture_llm("stream", _summarize_messages(api_messages),
+                                     "".join(reasoning_parts), time.perf_counter() - t0)
             raise
+        detail_trace.capture_llm("stream", _summarize_messages(api_messages),
+                                 "".join(reasoning_parts), time.perf_counter() - t0)
 
     def invoke_sync(self, messages, system_prompt=None, **kwargs) -> str:
         import asyncio as _asyncio

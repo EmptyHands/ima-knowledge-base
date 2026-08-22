@@ -185,3 +185,78 @@ async def test_web_search_skip_captured(trace_env, monkeypatch):
 
     text = trace_env.read_text(encoding="utf-8")
     assert "[检索]" in text and "web_search" in text and "跳过" in text
+
+
+class _Delta:
+    def __init__(self, content=None, reasoning_content=None):
+        self.content = content
+        self.reasoning_content = reasoning_content
+
+
+class _Choice:
+    def __init__(self, delta):
+        self.delta = delta
+
+
+class _Chunk:
+    def __init__(self, delta):
+        self.choices = [_Choice(delta)]
+
+
+class _FakeCompletions:
+    """模拟 openai 流式响应: 先 reasoning 后 content"""
+
+    async def create(self, model, messages, **kwargs):
+        for text in ["思考", "片段", "过程"]:
+            yield _Chunk(_Delta(reasoning_content=text))
+        for text in ["基于", "片段[1]", "的回答"]:
+            yield _Chunk(_Delta(content=text))
+
+
+class _FakeClient:
+    def __init__(self):
+        self.chat = type("_Chat", (), {"completions": _FakeCompletions()})()
+
+
+@pytest.mark.asyncio
+async def test_llm_stream_captures_reasoning_and_content(trace_env, monkeypatch):
+    """LLMAdapter 流式: 采集 reasoning_content 全文(截断), 回答仍只有 content"""
+    import backend.core.llm_adapter as adapter_module
+    import backend.utils.detail_trace as dt
+
+    adapter = adapter_module.LLMAdapter()
+    monkeypatch.setattr(adapter, "client", _FakeClient())
+    dt.begin({"question": "q", "conv_id": "c"})
+    tokens = [t async for t in adapter.astream(
+        [{"role": "user", "content": "hi"}], system_prompt="规则")]
+    dt.finish({"answer": "".join(tokens), "citations": [], "branch": "answer"})
+
+    assert "".join(tokens) == "基于片段[1]的回答", "回答不应包含思考内容"
+    text = trace_env.read_text(encoding="utf-8")
+    assert "[LLM] stream" in text and "耗时=" in text
+    assert "[思考] reasoning_content" in text
+    assert "思考片段过程" in text
+
+
+@pytest.mark.asyncio
+async def test_llm_stream_failure_still_captured(trace_env, monkeypatch):
+    """流式中途异常: 已采集内容保留, 不抛给调用方额外错误"""
+    import backend.core.llm_adapter as adapter_module
+    import backend.utils.detail_trace as dt
+
+    class _BoomCompletions:
+        async def create(self, model, messages, **kwargs):
+            yield _Chunk(_Delta(reasoning_content="前段思考"))
+            raise RuntimeError("boom")
+
+    adapter = adapter_module.LLMAdapter()
+    monkeypatch.setattr(adapter, "client", type("_C", (), {"chat": type("_Ch", (), {
+        "completions": _BoomCompletions()})()})())
+    dt.begin({"question": "q", "conv_id": "c"})
+    with pytest.raises(RuntimeError):
+        async for _ in adapter.astream([{"role": "user", "content": "hi"}]):
+            pass
+    dt.finish({"answer": "", "citations": [], "branch": "answer", "error": "boom"})
+
+    text = trace_env.read_text(encoding="utf-8")
+    assert "前段思考" in text
