@@ -13,6 +13,7 @@ import backend.graph.qa_graph as qa_graph
 from backend.api.routes.auth import get_current_user
 from backend.core.database import get_db
 from backend.graph.qa_graph import HISTORY_LIMIT, checkpointer, graph
+from backend.utils import detail_trace
 from backend.models.database import Conversation, Document, KnowledgeBase, Message, User
 from backend.models.messages import ChatMessage
 
@@ -171,6 +172,8 @@ async def ask(conv_id: str,
             # 反问: status 已由 ask_user 的 custom 流下发, 文案以 chunk 下发
             # (前端仅累积 chunk, 无 chunk 不渲染) + 入库 + 空引用 + done
             msg = _persist_assistant(interrupt_text)
+            detail_trace.finish({"answer": interrupt_text, "citations": [],
+                                 "branch": "ask_user"})
             yield _sse("chunk", {"text": interrupt_text})
             yield _sse("citations", {"items": []})
             yield _sse("done", {"message_id": msg.id})
@@ -189,12 +192,16 @@ async def ask(conv_id: str,
             if not saw_status:
                 yield _sse("status", {"text": status_text})
             msg = _persist_assistant(text)
+            detail_trace.finish({"answer": text, "citations": [],
+                                 "branch": "terminal"})
             yield _sse("chunk", {"text": text})
             yield _sse("citations", {"items": []})
             yield _sse("done", {"message_id": msg.id})
         else:
             answer = "".join(answer_parts).strip()
             msg = _persist_assistant(answer, citations)
+            detail_trace.finish({"answer": answer, "citations": citations,
+                                 "branch": "answer"})
             yield _sse("citations", {"items": citations})
             yield _sse("done", {"message_id": msg.id})
 
@@ -205,6 +212,9 @@ async def ask(conv_id: str,
             pass
 
     async def gen():
+        detail_trace.begin({"question": question, "kb_id": conv.kb_id,
+                            "conv_id": conv.id, "is_confirm": is_confirm,
+                            "history": history})
         try:
             config = {"configurable": {"thread_id": conv_id}}
             try:
@@ -222,6 +232,7 @@ async def ask(conv_id: str,
                     yield ev
         except Exception as e:
             logger.exception("问答管线失败")
+            detail_trace.finish({"error": str(e)[:200]})
             yield _sse("error", {"text": f"生成失败: {str(e)[:200]}"})
 
     return StreamingResponse(gen(), media_type="text/event-stream")

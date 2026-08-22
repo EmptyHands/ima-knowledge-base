@@ -1,4 +1,5 @@
 """DEV-022: 详细日志开关与采集内容测试"""
+import json
 import re
 
 import pytest
@@ -318,3 +319,99 @@ async def test_graph_ask_user_branch_captured(trace_env, monkeypatch):
     text = trace_env.read_text(encoding="utf-8")
     assert "[节点] ask_user" in text
     assert "[LLM]" not in text
+
+
+def _parse_sse(body: str) -> list[tuple[str, dict]]:
+    events = []
+    for block in body.split("\n\n"):
+        event, data = None, None
+        for line in block.splitlines():
+            if line.startswith("event: "):
+                event = line[len("event: "):]
+            elif line.startswith("data: "):
+                data = json.loads(line[len("data: "):])
+        if event is not None:
+            events.append((event, data))
+    return events
+
+
+@pytest.fixture()
+def kb_id(app_client, auth_headers):
+    resp = app_client.post("/api/v1/knowledge-bases",
+                           json={"name": "trace库", "description": ""},
+                           headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    kb_id = resp.json()["id"]
+    from backend.core.database import get_db_session
+    from backend.models.database import Document
+    db = get_db_session()
+    db.add(Document(id=f"doc-{kb_id}", kb_id=kb_id, filename="trace.pdf",
+                    file_path="/tmp/trace.pdf"))
+    db.commit()
+    db.close()
+    return kb_id
+
+
+@pytest.fixture()
+def conv_id(app_client, auth_headers, kb_id):
+    resp = app_client.post(f"/api/v1/conversations?kb_id={kb_id}",
+                           json={"kb_id": kb_id, "title": "新对话"},
+                           headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    return resp.json()["id"]
+
+
+def test_full_flow_logs_request_and_result(app_client, auth_headers, conv_id,
+                                           fake_llm, fake_retrieve, trace_env):
+    resp = app_client.post(f"/api/v1/conversations/{conv_id}/messages",
+                           json={"question": "Transformer 使用什么机制"},
+                           headers=auth_headers)
+    assert resp.status_code == 200
+    assert "done" in [e for e, _ in _parse_sse(resp.text)]
+
+    text = trace_env.read_text(encoding="utf-8")
+    assert f"问答 #{conv_id}" in text
+    assert "[请求]" in text and "Transformer" in text
+    assert "[节点] retrieve" in text and "[节点] answer" in text
+    assert "[结果]" in text and "分支=answer" in text
+    assert "[耗时]" in text
+
+
+def test_error_flow_logs_error(app_client, auth_headers, conv_id, fake_retrieve,
+                               trace_env, monkeypatch):
+    from backend.core.llm_adapter import LLMProvider
+
+    class FailingLLM(LLMProvider):
+        async def astream(self, messages, system_prompt=None):
+            yield  # async generator: 流式消费时真正抛出故障
+            raise RuntimeError("LLM 模拟故障")
+
+        async def ainvoke(self, messages, system_prompt=None, **kwargs):
+            raise RuntimeError("LLM 模拟故障")
+
+    import backend.core.llm_adapter as llm_adapter_module
+    monkeypatch.setattr(llm_adapter_module, "_llm_adapter", FailingLLM())
+
+    resp = app_client.post(f"/api/v1/conversations/{conv_id}/messages",
+                           json={"question": "会不会失败"}, headers=auth_headers)
+    assert resp.status_code == 200
+    events = _parse_sse(resp.text)
+    assert events[-1][0] == "error"
+
+    text = trace_env.read_text(encoding="utf-8")
+    assert "[错误]" in text and "LLM 模拟故障" in text
+
+
+def test_disabled_full_flow_no_file(app_client, auth_headers, conv_id, fake_llm,
+                                    fake_retrieve, monkeypatch, tmp_path):
+    """端到端: 关闭开关时文件不产生(性能契约)"""
+    import backend.core.config as config_module
+    monkeypatch.setenv("DETAIL_LOG_ENABLED", "false")
+    monkeypatch.setenv("DETAIL_LOG_PATH", str(tmp_path / "detail.log"))
+    config_module._config = None
+
+    resp = app_client.post(f"/api/v1/conversations/{conv_id}/messages",
+                           json={"question": "Transformer 使用什么机制"},
+                           headers=auth_headers)
+    assert resp.status_code == 200
+    assert not (tmp_path / "detail.log").exists()
