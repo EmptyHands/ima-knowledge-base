@@ -38,7 +38,7 @@ class DetailTrace:
 
     def add(self, kind: str, text: str) -> None:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        self.events.append(f"{ts} [{kind}] {text}")
+        self.events.append(f"[{ts}] [{kind}] {text}")
 
     def render(self, result: dict | None) -> str:
         req = self.request
