@@ -116,3 +116,72 @@ async def test_registry_call_captures_tool(trace_env, monkeypatch):
     assert "[工具] vector_search" in text
     assert "kb1" in text
     assert "耗时=" in text
+
+
+class _FakeStore:
+    """可控 dense/sparse 结果(照抄 test_retrieval.py 的 FakeHybridStore 思路)"""
+
+    def __init__(self, dense=None, sparse=None):
+        self._dense = dense or []
+        self._sparse = sparse or []
+
+    async def search(self, kb_id, query, top_k=5):
+        return self._dense[:top_k]
+
+    async def sparse_search(self, kb_id, query, top_k=5):
+        return self._sparse[:top_k]
+
+
+@pytest.mark.asyncio
+async def test_retrieval_dense_path_captured(trace_env, app_client, monkeypatch):
+    """dense 高分 → 走 dense, 记录查询字段与 chunk 结果"""
+    import backend.core.retrieval as retrieval_module
+    import backend.utils.detail_trace as dt
+
+    dense = [{"score": 0.81, "text": "Transformer 使用自注意力机制", "doc_id": "d1",
+              "page": 3, "chunk_index": 0}]
+    monkeypatch.setattr(retrieval_module, "get_vector_store",
+                        lambda: _FakeStore(dense=dense))
+    dt.begin({"question": "q", "conv_id": "c"})
+    result = await retrieval_module.vector_search("kb1", "Transformer", top_k=5)
+    dt.finish({"answer": "a", "citations": [], "branch": "answer"})
+
+    assert len(result) == 1
+    text = trace_env.read_text(encoding="utf-8")
+    assert "查询={'kb_id': 'kb1', 'question': 'Transformer', 'top_k': 5}" in text
+    assert "0.81" in text and ">= 阈值" in text
+    assert "结果 1 条" in text
+
+
+@pytest.mark.asyncio
+async def test_retrieval_sparse_fallback_captured(trace_env, app_client, monkeypatch):
+    """dense 低分 → 降级 sparse 决策记录"""
+    import backend.core.retrieval as retrieval_module
+    import backend.utils.detail_trace as dt
+
+    low = [{"score": 0.2, "text": "x", "doc_id": "d1", "page": 1, "chunk_index": 0}]
+    sparse = [{"score": 0.9, "text": "关键词命中", "doc_id": "d1", "page": 2, "chunk_index": 1}]
+    monkeypatch.setattr(retrieval_module, "get_vector_store",
+                        lambda: _FakeStore(dense=low, sparse=sparse))
+    dt.begin({"question": "q", "conv_id": "c"})
+    result = await retrieval_module.vector_search("kb1", "q", top_k=5)
+    dt.finish({"answer": "a", "citations": [], "branch": "answer"})
+
+    text = trace_env.read_text(encoding="utf-8")
+    assert "0.20" in text and "走 sparse" in text
+    assert result[0]["search_type"] == "sparse"
+
+
+@pytest.mark.asyncio
+async def test_web_search_skip_captured(trace_env, monkeypatch):
+    """web_search 未配置 key 跳过时也记录决策"""
+    import backend.core.retrieval as retrieval_module
+    import backend.utils.detail_trace as dt
+
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    dt.begin({"question": "q", "conv_id": "c"})
+    assert await retrieval_module.web_search("测试") == []
+    dt.finish({"answer": "a", "citations": [], "branch": "answer"})
+
+    text = trace_env.read_text(encoding="utf-8")
+    assert "[检索]" in text and "web_search" in text and "跳过" in text
