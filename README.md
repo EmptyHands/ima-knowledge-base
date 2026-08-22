@@ -105,6 +105,17 @@ npm run dev
 
 打开 http://localhost:5173 → 注册 → 新建知识库 → 上传文档 → 提问。
 
+### 网关多实例模式 (DEV-019)
+
+后端容器化 + nginx 网关横向扩展,前端保持本地 dev:
+
+```bash
+docker compose up -d --scale backend=2   # Qdrant + Redis + 后端多实例 + nginx 网关
+# 前端本地 npm run dev, /api 经 vite 代理到网关 127.0.0.1:8000
+```
+
+人机交互中断态存 Redis(thread_id=会话ID),resume 请求落到任意实例都能恢复;Redis 未启动时自动降级内存 checkpointer,单实例体验不变。
+
 ## MCP 工具接入
 
 系统内置手写轻量 MCP 服务器(JSON-RPC 2.0 子集 + SSE 传输),暴露三个工具:
@@ -151,6 +162,7 @@ venv/Scripts/python.exe -m pytest tests/ -v
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v1.6.0 | 2026-08-22 | 新增 DEV-019:nginx 网关 + Docker 多后端实例横向扩展(least_conn + SSE 透传,被动健康检查);langgraph 人机交互中断态从内存换 AsyncRedisSaver 暂存 Redis,resume 落到任意实例可恢复,Redis 不可用自动降级内存;SQLite 开 WAL + busy timeout 支持共享卷多实例并发(纯后端 + 部署层,前端零改动) |
 | v1.5.0 | 2026-08-21 | 新增 DEV-012:问答流水线 langgraph 化 — 检索/判定/人机交互/回答四节点显式状态图, RAG 无可靠结果经 interrupt 挂起询问用户, 确认后循环回检索节点强制联网重检, 终止分支防死循环(纯后端, SSE 契约与前端不变) |
 | v1.4.0 | 2026-08-17 | 新增 DEV-015:对话摘要压缩 — 窗口外历史经 LLM 增量压缩为摘要存会话, 检索时并行生成并以 system 消息注入后续回答, 长对话保留跨轮关键信息(纯后端, 前端不变) |
 | v1.3.2 | 2026-08-17 | 修复 DEV-009:会话标题在兜底反问分支显示 agent 回复原文 — 改为取用户第一个问题截断, 与正常回答分支统一 |
@@ -174,3 +186,9 @@ venv/Scripts/python.exe -m pytest tests/ -v
 - **Rerank**: 交叉编码器重排检索结果,提升 top-k 质量
 - **OCR**: 扫描件解析(PaddleOCR 本地化)
 - **部署上云**: SQLite → PostgreSQL,本地存储 → S3,静态前端托管 Vercel(.env 全配置化,不改代码)
+
+## 已知限制(多实例模式)
+
+- MCP SSE 会话注册表 per-instance:`/mcp/sse` 长连接与 `/mcp/messages` 被分发到不同实例时查不到会话(可后续 nginx `ip_hash` 对 /mcp/* 做粘性路由)
+- SQLite 共享卷仅支持单机多实例,跨机横向扩展需 PostgreSQL(部署上云方向)
+- Redis 单点,生产需 Sentinel/集群
