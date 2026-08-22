@@ -2,9 +2,11 @@
 
 人机交互闭环: 无可靠结果 → ask_user interrupt 挂起 → 用户确认后 resume →
 allow_web_search=True → 边回到 retrieve 全量重跑(向量+联网)。
-MemorySaver 以 thread_id=会话ID 跨 HTTP 请求保存状态(DEV-019 将换 redis)。
+checkpointer 以 thread_id=会话ID 跨 HTTP 请求保存状态(DEV-019 换 redis,
+不可用自动降级 MemorySaver)。
 """
 import asyncio
+import logging
 from typing import Optional, TypedDict
 
 from langchain_core.runnables.config import var_child_runnable_config
@@ -14,11 +16,14 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from backend.agents import retriever_agent
+from backend.core.config import get_config
 from backend.core.database import get_db_session
 from backend.core.llm_adapter import get_llm
 from backend.core.retrieval import detect_web_intent
 from backend.models.database import Conversation, Message
 from backend.services import memory
+
+logger = logging.getLogger(__name__)
 
 HISTORY_LIMIT = 10
 
@@ -191,5 +196,42 @@ def build_graph(checkpointer=None):
     return g.compile(checkpointer=checkpointer or MemorySaver())
 
 
-checkpointer = MemorySaver()
+def _redis_reachable(host: str, port: int) -> bool:
+    """TCP 连通性探测(1s 超时): 纯 socket, 与事件循环无关, 各环境通用"""
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def _create_checkpointer():
+    """AsyncRedisSaver 优先, redis 不可用(未启动/未配置)时降级 MemorySaver
+
+    连通性探测: 纯 TCP socket(1s 超时), 不建 redis 客户端 —— redis.asyncio
+    连接绑定创建它的事件循环, 探测期建连会污染图后续驱动(Event loop is
+    closed); 且死端口场景 redis-py 连接重试会放大探测耗时。连通性由探测
+    覆盖, 实际读写由首次图驱动时的 aget_tuple 兜底(计划 Task 3 注意点)。
+    探测通过后为图自建客户端直接构造 AsyncRedisSaver(不走 contextmanager,
+    保证模块级单例存活), 连接在图的首次命令时惰性建立于图的事件循环。
+    """
+    from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+    import redis.asyncio as aioredis
+
+    config = get_config()
+    try:
+        if not _redis_reachable(config.redis_host, config.redis_port):
+            raise RuntimeError(f"{config.redis_host}:{config.redis_port} 连接失败")
+        client = aioredis.Redis(host=config.redis_host, port=config.redis_port,
+                                db=config.redis_db)
+        saver = AsyncRedisSaver(redis_client=client)
+        logger.info(f"Redis checkpointer 就绪: {config.redis_host}:{config.redis_port}/{config.redis_db}")
+        return saver
+    except Exception as e:
+        logger.warning(f"Redis checkpointer 不可用, 降级 MemorySaver: {e}")
+        return MemorySaver()
+
+
+checkpointer = _create_checkpointer()
 graph = build_graph(checkpointer=checkpointer)
