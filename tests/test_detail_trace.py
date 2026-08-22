@@ -94,3 +94,25 @@ async def test_long_text_truncated(trace_env):
     text = trace_env.read_text(encoding="utf-8")
     assert "截断" in text
     assert "长" * 2000 not in text
+
+
+@pytest.mark.asyncio
+async def test_registry_call_captures_tool(trace_env, monkeypatch):
+    """registry.call 记录工具名/参数/结果/耗时"""
+    import backend.core.retrieval as retrieval_module
+    from backend.mcp.registry import registry
+    import backend.utils.detail_trace as dt
+
+    async def _fake_vs(kb_id, question, top_k=None):
+        return [{"score": 0.9, "text": "t", "doc_id": "d1", "page": 1, "chunk_index": 0}]
+
+    monkeypatch.setattr(retrieval_module, "vector_search", _fake_vs)
+    dt.begin({"question": "q", "conv_id": "c"})
+    result = await registry.call("vector_search", {"kb_id": "kb1", "question": "q", "top_k": 3})
+    dt.finish({"answer": "a", "citations": [], "branch": "answer"})
+
+    assert result["chunks"][0]["score"] == 0.9
+    text = trace_env.read_text(encoding="utf-8")
+    assert "[工具] vector_search" in text
+    assert "kb1" in text
+    assert "耗时=" in text

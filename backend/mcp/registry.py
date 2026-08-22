@@ -1,6 +1,9 @@
 """工具注册表 - MCP 工具注册/发现/调用, 纯 Python 无 I/O"""
+import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable
+
+from backend.utils import detail_trace
 
 
 class ToolError(Exception):
@@ -40,7 +43,10 @@ class ToolRegistry:
         if tool is None:
             raise ToolNotFoundError(f"未知工具: {name}")
         self._validate(arguments, tool.input_schema)
+        t0 = time.perf_counter()
         result = await tool.handler(arguments)
+        detail_trace.capture_tool(name, arguments, result or {},
+                                  time.perf_counter() - t0)
         return result or {}
 
     @staticmethod
