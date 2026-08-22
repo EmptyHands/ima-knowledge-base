@@ -260,3 +260,61 @@ async def test_llm_stream_failure_still_captured(trace_env, monkeypatch):
 
     text = trace_env.read_text(encoding="utf-8")
     assert "前段思考" in text
+
+
+@pytest.mark.asyncio
+async def test_graph_nodes_and_routes_captured(trace_env, monkeypatch):
+    """图驱动: 节点进入 + 路由决策采集; fake_llm 注入故无 [LLM] 行"""
+    from backend.agents import answer_agent, retriever_agent
+    from backend.graph.qa_graph import build_graph
+    from langgraph.checkpoint.memory import MemorySaver
+    import backend.utils.detail_trace as dt
+
+    async def _ret(question, kb_id, top_k=5, force_web=False):
+        return {"chunks": [{"text": "x", "doc_id": "d", "page": 1, "doc_name": "a.pdf"}],
+                "web_results": []}
+
+    async def _fake_stream(question, history, chunks, web_results, llm=None, summary=None):
+        yield {"type": "status", "data": "检索完成"}
+        yield {"type": "chunk", "data": "基于片段[1]的回答"}
+        yield {"type": "citations", "data": []}
+
+    monkeypatch.setattr(retriever_agent, "retrieve", _ret)
+    monkeypatch.setattr(answer_agent, "stream", _fake_stream)
+
+    dt.begin({"question": "q", "conv_id": "c"})
+    g = build_graph(MemorySaver())
+    final = await g.ainvoke({"question": "q", "kb_id": "kb1", "conv_id": "c",
+                             "kb_empty": False, "allow_web_search": False,
+                             "history": []}, {"configurable": {"thread_id": "t1"}})
+    dt.finish({"answer": final["answer"], "citations": [], "branch": "answer"})
+
+    text = trace_env.read_text(encoding="utf-8")
+    for marker in ("[节点] retrieve", "[节点] decide", "[节点] answer",
+                   "route_after_retrieve", "route_after_answer", "[决策]"):
+        assert marker in text, marker
+
+
+@pytest.mark.asyncio
+async def test_graph_ask_user_branch_captured(trace_env, monkeypatch):
+    """空库反问分支: ask_user 节点进入, 零 LLM"""
+    from backend.agents import retriever_agent
+    from backend.graph.qa_graph import build_graph
+    from langgraph.checkpoint.memory import MemorySaver
+    import backend.utils.detail_trace as dt
+
+    async def _ret(question, kb_id, top_k=5, force_web=False):
+        return {"chunks": [], "web_results": []}
+
+    monkeypatch.setattr(retriever_agent, "retrieve", _ret)
+
+    dt.begin({"question": "q", "conv_id": "c"})
+    g = build_graph(MemorySaver())
+    await g.ainvoke({"question": "q", "kb_id": "kb1", "conv_id": "c",
+                     "kb_empty": True, "allow_web_search": False,
+                     "history": []}, {"configurable": {"thread_id": "t2"}})
+    dt.finish({"answer": "反问文案", "citations": [], "branch": "ask_user"})
+
+    text = trace_env.read_text(encoding="utf-8")
+    assert "[节点] ask_user" in text
+    assert "[LLM]" not in text

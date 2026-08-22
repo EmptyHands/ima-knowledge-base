@@ -17,6 +17,7 @@ from langgraph.types import interrupt
 
 from backend.agents import retriever_agent
 from backend.core.config import get_config
+from backend.utils import detail_trace
 from backend.core.database import get_db_session
 from backend.core.llm_adapter import get_llm
 from backend.core.retrieval import detect_web_intent
@@ -64,6 +65,7 @@ class QaState(TypedDict):
 
 async def _retrieve(state: QaState) -> dict:
     """向量检索(关键词意图或已确认时联网)与摘要压缩并行, 取 max 延迟(DEV-015)"""
+    detail_trace.capture_node("retrieve", state)
     allow_web = state["allow_web_search"] or detect_web_intent(state["question"])
 
     async def _search():
@@ -94,24 +96,33 @@ def _reliable(chunks: list, web_results: list) -> bool:
 
 async def _decide(state: QaState) -> dict:
     """可靠性判定: 可靠走 answer; 已联网仍不可靠 → 终止文案(防死循环)"""
+    detail_trace.capture_node("decide", state)
     if _reliable(state["chunks"], state["web_results"]):
+        detail_trace.capture_decision("decide", "reliable → answer")
         return {}
     if state["allow_web_search"]:
+        detail_trace.capture_decision("decide", "已联网仍不可靠 → 终止(WEB_UNAVAILABLE)")
         return {"fallback_text": WEB_UNAVAILABLE}
     reason = "empty_kb" if state["kb_empty"] else "no_result"
+    detail_trace.capture_decision("decide", f"不可靠 → ask_user (reason={reason})")
     return {"ask_reason": reason}
 
 
 def _route_after_retrieve(state: QaState) -> str:
     # 空库且未确认联网: 直接反问, 零检索零 LLM(与现状一致)
     if state["kb_empty"] and not state["allow_web_search"]:
+        detail_trace.capture_decision("route_after_retrieve", "ask_user (空库且未确认联网)")
         return "ask_user"
     if "chunks" not in state:
+        detail_trace.capture_decision("route_after_retrieve", "retrieve (START 首次)")
         return "retrieve"  # START: 尚未检索, 先跑 retrieve 节点
     if _reliable(state["chunks"], state["web_results"]):
+        detail_trace.capture_decision("route_after_retrieve", "answer (检索结果可靠)")
         return "answer"
     if state["allow_web_search"]:
+        detail_trace.capture_decision("route_after_retrieve", "END (已联网仍无结果)")
         return END  # 已联网仍无结果: 终止(防死循环)
+    detail_trace.capture_decision("route_after_retrieve", "ask_user (无可靠结果)")
     return "ask_user"
 
 
@@ -123,6 +134,7 @@ async def _ask_user(state: QaState, config=None) -> dict:
     get_config() 拿不到 var_child_runnable_config 会使 interrupt/get_stream_writer
     报 "Called get_config outside of a runnable context", 故手动注入节点 config。
     """
+    detail_trace.capture_node("ask_user", state)
     token = var_child_runnable_config.set(config) if config else None
     try:
         reason = state.get("ask_reason") or ("empty_kb" if state["kb_empty"] else "no_result")
@@ -142,6 +154,7 @@ async def _answer(state: QaState, config=None) -> dict:
     (CONTEXT_NOT_SUPPORTED), get_stream_writer() 需手动注入节点 config,
     模式与 _ask_user 相同。
     """
+    detail_trace.capture_node("answer", state)
     from backend.agents import answer_agent
     from backend.models.messages import ChatMessage
 
@@ -174,9 +187,12 @@ async def _answer(state: QaState, config=None) -> dict:
 def _route_after_answer(state: QaState) -> str:
     # 用 .get(): 1.2.11 下未写入过的键不存在于通道值中, 直接下标会 KeyError
     if state["answer"]:
+        detail_trace.capture_decision("route_after_answer", "END (answer 非空)")
         return END
     if state.get("fallback_text"):
+        detail_trace.capture_decision("route_after_answer", "END (fallback_text 终止)")
         return END
+    detail_trace.capture_decision("route_after_answer", "ask_user (空回答反问)")
     return "ask_user"
 
 
