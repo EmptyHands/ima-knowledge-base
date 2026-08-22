@@ -1,11 +1,12 @@
 # 智能知识库问答系统 (Web 版 ima 精简实现)
 
-基于文档的知识库问答系统:上传 PDF/Word/TXT → 向量化入库 → 多 Agent 问答(检索/回答/引用校验) → 流式输出带引用溯源的回答。引用按证据强度分级:逐字匹配的显示原文片段,概括性引用的显示文档出处。
+基于文档的知识库问答系统:上传 PDF/Word/TXT → 向量化入库 → langgraph 问答管线(检索/判定/人机交互/回答四节点) → 流式输出带引用溯源的回答。引用按证据强度分级:逐字匹配的显示原文片段,概括性引用的显示文档出处。
 
 ## 功能
 
 - **文档管理**: 多格式上传(PDF/Word/TXT/Markdown),解析状态机(pending → processing → ready/failed)
 - **RAG 问答**: 向量检索 + LLM 生成,SSE 流式打字机输出,多轮会话上下文
+- **langgraph 问答管线**: 检索/判定/人机交互/回答四节点显式状态图;无可靠结果经 interrupt 挂起反问,确认后强制联网重检(防死循环);中断态存 Redis 可跨实例恢复,不可用自动降级内存
 - **引用溯源**: 回答中 `[n]` 角标可点击弹出引用卡片;字符二元组包含率校验(阈值 0.6)分级展示 — 逐字匹配的引用显示原文片段并标注「该结论有原文依据」,概括性引用弱化显示、点开仅展示文档名/页码
 - **混合检索**: 问题含「最新/实时/网络」等意图时自动触发 Tavily 网络搜索,与知识库结果一并交给 LLM
 - **检索兜底**: 语义检索无结果或分数过低时,自动降级 BM25 关键词检索;两轮皆空则固定反问「是否需要联网搜索」,用户回复确认词后提取原问题强制联网作答
@@ -32,13 +33,11 @@ flowchart LR
         CHUNK --> EMBED["Embedding bge-m3"]
         EMBED --> QDRANT[("Qdrant 向量库")]
         ASK["问答路由 SSE"]
-        ASK --> RET["RetrieverAgent"]
-        RET --> QDRANT
-        RET --> WEB["Tavily 网络搜索"]
-        RET --> ANS["AnswerAgent"]
-        ANS --> CIT["CitationAgent 引用校验"]
-        ANS --> CHAT
-        CIT --> SSE
+        ASK --> GRAPH["langgraph 状态图<br/>(retrieve/decide/ask_user/answer)"]
+        GRAPH --> QDRANT
+        GRAPH --> WEB["Tavily 网络搜索"]
+        GRAPH --> CHKP[("checkpointer<br/>Redis / Memory 降级")]
+        GRAPH --> CHAT
     end
     subgraph MCP["MCP 工具层 (JSON-RPC 2.0 + SSE)"]
         MCPREG["工具注册表 registry"]
@@ -46,7 +45,7 @@ flowchart LR
         MCPSSE["SSE 传输 + 共享密钥鉴权"]
         MCPREG --> MCPTOOLS
         MCPSSE --> MCPREG
-        RET --> MCPREG
+        GRAPH --> MCPREG
         MCPCLI["外部 MCP 客户端 (MCP Inspector)"] --> MCPSSE
     end
     META[("SQLite: 用户/知识库/文档/会话/消息")]
@@ -54,20 +53,40 @@ flowchart LR
     ASK --> META
 ```
 
+**问答状态图 (langgraph)**:
+
+```mermaid
+flowchart TD
+    START["START"] --> R1{"kb_empty 且未确认联网?"}
+    R1 -->|否, 尚未检索| RET["retrieve<br/>向量检索 + 意图联网<br/>+ 摘要压缩(DEV-015)"]
+    R1 -->|是| ASK["ask_user<br/>interrupt 挂起<br/>下发反问文案"]
+    RET --> DEC["decide<br/>可靠性判定"]
+    DEC --> R2{"检索结果可靠?"}
+    R2 -->|是| ANS["answer<br/>LLM 流式回答 + [n] 引用标注<br/>引用校验"]
+    R2 -->|否, 已联网| ENDX["END<br/>终止文案<br/>(防死循环)"]
+    R2 -->|否, 未联网| ASK
+    ASK -->|resume 确认| RET
+    ANS --> R3{"回答非空?"}
+    R3 -->|是| ENDX
+    R3 -->|否, 未联网| ASK
+    R3 -->|否, 已联网| ENDX
+```
+
 **问答链路数据流**:
 
-1. 用户提问 → 后端持久化 user 消息,下发 `status` 事件
-2. RetrieverAgent: 问题向量化 → Qdrant 检索 top-k 片段(附文档名/页码);意图判断触发网络搜索(可选)
-3. AnswerAgent: 检索片段+历史(最近 10 条)拼进 prompt,流式返回 `chunk` 事件;提示词要求句末标 `[n]` 并输出 `## 引用` 列表
-4. CitationAgent: 对每个 `[n]` 提取所在句子(按 [n] 分段、标点后回溯),与对应片段做字符二元组包含率校验,≥0.6 标记 verified
-5. 校验结果以 `citations` 事件结构化下发(不解析 LLM 原文格式),回答+引用入库,`done` 事件结束
+1. 用户提问 → 后端持久化 user 消息,下发 `status` 事件,以 thread_id=会话ID 驱动状态图(checkpointer 存 Redis,多实例可跨节点恢复)
+2. retrieve 节点: 问题向量化 → Qdrant 检索 top-k 片段(附文档名/页码);摘要压缩并行执行;关键词意图或用户确认后触发网络搜索
+3. decide 节点: 可靠性判定 — 有片段/网络结果走 answer;空库或空结果走 ask_user;已联网仍无结果直接终止(防死循环)
+4. ask_user 节点: 下发反问文案并 interrupt 挂起;用户回复确认后 resume(开联网开关)回到 retrieve 强制联网全量重跑
+5. answer 节点: 检索片段+历史(最近 10 条)+摘要拼进 prompt,流式返回 `chunk` 事件;提示词要求句末标 `[n]` 并输出 `## 引用` 列表;引用校验对每个 `[n]` 提取所在句子,与对应片段做字符二元组包含率校验,≥0.6 标记 verified
+6. 校验结果以 `citations` 事件结构化下发(不解析 LLM 原文格式),回答+引用入库,`done` 事件结束
 
 ## 技术选型理由
 
 | 选型 | 替代方案 | 选择理由 |
 |------|---------|---------|
 | React + Vite + Tailwind + shadcn/ui | Next.js / Vue | 纯 SPA 无 SSR 需求;shadcn 组件源码在项目内可直接改,AI 修复友好;Vite dev 秒级热更新 |
-| 手写 RAG 多 Agent 管线 | LangChain / LlamaIndex | 检索→回答→引用校验三段逻辑清晰可讲,依赖少易调试;面试答辩可展示系统设计能力 |
+| langgraph 状态图 + 手写节点 | 纯手写状态机 / LlamaIndex | 检索/判定/交互/回答四节点显式可编程可审计;interrupt + checkpointer 原生支撑人机交互挂起与跨请求恢复(DEV-012/019);节点内实现仍手写,可控易调试 |
 | Qdrant 向量库 | Chroma / Milvus | Docker 一条命令启动,Python 客户端简单;支持 filter 按 kb_id 隔离 |
 | 手写轻量 MCP 工具层 | 官方 MCP SDK | 注册表/协议/传输/工具四层 ~250 行零额外依赖;SSE + 共享密钥即可被 MCP Inspector 接入,内部 Agent 与外部客户端共用同一注册表 |
 | FastAPI + SQLAlchemy | Django / Flask | 原生 SSE/异步流式支持,自动 OpenAPI 文档,SQLite 起步可平滑切 PostgreSQL |
@@ -145,7 +164,7 @@ http://127.0.0.1:8000/mcp/sse?api_key=你的密钥
 venv/Scripts/python.exe -m pytest tests/ -v
 ```
 
-117 个测试全绿,不消耗 API 费用、不依赖网络:
+156 个测试全绿,不消耗 API 费用、不依赖网络:
 
 - **单元**: 文件解析(页码提取)、分块(不跨页)、引用校验(真实/编造/混合引用)、密码哈希、向量库(确定性伪向量)、MCP 工具注册表/协议层(参数校验、JSON-RPC 分发、错误码)
 - **集成**: `test_e2e_flow.py` 全链路——注册→建库→上传最小 PDF→轮询 ready→提问→断言 SSE 事件序列与引用校验结果,使用 fake LLM(固定输出注入)+ 伪 embedding,离线可跑;`test_mcp_transport.py` 用真实 uvicorn + httpx 验证 MCP SSE 握手往返与会话清理
@@ -154,7 +173,6 @@ venv/Scripts/python.exe -m pytest tests/ -v
 
 - 只支持**文本型** PDF(扫描件无文本层会标记解析失败);OCR 见扩展方向
 - LLM 引用标注格式不稳定:引用列表走 SSE 结构化下发 + 校验 Agent 兜底,不解析 LLM 原文格式
-- 存量向量数据需重建:旧 collection 缺少关键词索引,启动时会提示删除重建后再导入文档
 
 ## 未来扩展
 
