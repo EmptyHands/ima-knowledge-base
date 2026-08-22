@@ -12,6 +12,7 @@
 - **检索兜底**: 语义检索无结果或分数过低时,自动降级 BM25 关键词检索;两轮皆空则固定反问「是否需要联网搜索」,用户回复确认词后提取原问题强制联网作答
 - **MCP 工具服务器**: 手写轻量 MCP(JSON-RPC 2.0 子集 + SSE 传输),把 web_search/vector_search/kb_status 封装为 MCP 工具,外部 MCP 客户端(如 MCP Inspector)共享密钥接入;内部 Agent 检索同样走工具注册表调用
 - **多用户**: JWT 认证,用户/知识库/文档/会话/消息五张表隔离
+- **详细日志 (DEV-022)**: 可开关的单文件链路日志(DETAIL_LOG_ENABLED),记录内部思考/工具调用/链路/state/RAG 查询与 chunk 结果,关闭时零开销,便于调试
 
 ## 架构
 
@@ -180,6 +181,7 @@ venv/Scripts/python.exe -m pytest tests/ -v
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v1.7.0 | 2026-08-22 | 新增 DEV-022:详细日志 — 可开关的单文件 detail.log(内部思考/工具调用/链路/state/RAG 查询与 chunk 结果),关闭时零开销;配置经 .env.example 与 .gitignore 纳入版本管理 |
 | v1.6.0 | 2026-08-22 | 新增 DEV-019:nginx 网关 + Docker 多后端实例横向扩展(least_conn + SSE 透传,被动健康检查);langgraph 人机交互中断态从内存换 AsyncRedisSaver 暂存 Redis,resume 落到任意实例可恢复,Redis 不可用自动降级内存;SQLite 开 WAL + busy timeout 支持共享卷多实例并发(纯后端 + 部署层,前端零改动) |
 | v1.5.0 | 2026-08-21 | 新增 DEV-012:问答流水线 langgraph 化 — 检索/判定/人机交互/回答四节点显式状态图, RAG 无可靠结果经 interrupt 挂起询问用户, 确认后循环回检索节点强制联网重检, 终止分支防死循环(纯后端, SSE 契约与前端不变) |
 | v1.4.0 | 2026-08-17 | 新增 DEV-015:对话摘要压缩 — 窗口外历史经 LLM 增量压缩为摘要存会话, 检索时并行生成并以 system 消息注入后续回答, 长对话保留跨轮关键信息(纯后端, 前端不变) |

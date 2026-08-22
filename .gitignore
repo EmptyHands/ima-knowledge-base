@@ -12,6 +12,7 @@ __pycache__/
 # 运行时数据
 data/uploads/*
 !data/uploads/.gitkeep
+data/logs/
 
 # 前端
 node_modules/
