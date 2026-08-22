@@ -1,0 +1,13 @@
+# 构建 context 瘦身 (DEV-019 网关多实例)
+venv/
+node_modules/
+frontend/
+data/
+docs/
+tests/
+.git/
+.env
+*.db
+__pycache__/
+*.py[cod]
+.pytest_cache/
