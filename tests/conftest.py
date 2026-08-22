@@ -5,6 +5,12 @@ from pathlib import Path
 
 import pytest
 
+# DEV-019: 默认测试环境禁用 redis 探测(指向死端口), 模块级 checkpointer 稳定走
+# MemorySaver — AsyncRedisSaver 的 redis.asyncio 连接绑定首个事件循环, 跨测试
+# 新循环复用报 "Future attached to a different loop" (14 个既有用例回归)。
+# redis 语义由 tests/test_checkpointer.py 的 skipif 集成用例(显式 6379)覆盖。
+os.environ["REDIS_PORT"] = "6399"
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
